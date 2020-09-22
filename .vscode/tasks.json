@@ -1,0 +1,67 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"label": "C/C++: g++.exe build main program",
+			"command": "C:\\Program Files\\mingw-w64\\x86_64-8.1.0-posix-seh-rt_v6-rev0\\mingw64\\bin\\g++.exe",
+			"args": [
+				"-march=native",
+				"-g",
+				"-O3",
+
+				"${workspaceFolder}\\main.cpp",
+				"C:\\Users\\agcum\\Documents\\glad\\src\\glad.c",
+
+				"-IC:\\Users\\agcum\\Documents\\glfw-3.3.2\\include",
+				"-IC:\\Users\\agcum\\Documents\\glad\\include",
+				
+				"-LC:\\Users\\agcum\\Documents\\glfw-3.3.2\\lib-mingw-w64",
+
+				"-lglfw3",
+				"-lgdi32",
+				"-lopengl32",
+				"-luser32",
+				"-lshell32",
+
+				"-o",
+				"${workspaceFolder}\\main.exe"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		},
+		{
+			"type": "shell",
+			"label": "C/C++: g++.exe benchmark",
+			"command": "C:\\Program Files\\mingw-w64\\x86_64-8.1.0-posix-seh-rt_v6-rev0\\mingw64\\bin\\g++.exe",
+			"args": [
+				"-g",
+				"-O0",
+				"-march=native",
+
+				"${workspaceFolder}\\benchmark.cpp",
+
+				"-o",
+				"${workspaceFolder}\\benchmark.exe"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		}
+	]
+}
