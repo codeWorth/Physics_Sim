@@ -19,7 +19,7 @@ const GLfloat ENERGY_LOSS = 0.97;
 const GLfloat ATTRACTION = 500000;
 const GLfloat GRAVITY = 0;
 
-const int PARTICLE_COUNT = (1400/8) * 8; // align number to 8 boundary for SIMD 256
+const int PARTICLE_COUNT = (5000/8) * 8; // align number to 8 boundary for SIMD 256
 const int PARTICLE_RADIUS = PHYSICS_SCALE*4;
 const int PARTICLE_RADIUS2 = PARTICLE_RADIUS * PARTICLE_RADIUS * 4;
 const GLfloat PARTICLE_SPEED = 200;

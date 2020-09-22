@@ -1,6 +1,8 @@
 #include <immintrin.h>
 #include <chrono>
 #include <iostream>
+#include <cmath>
+#include <algorithm>
 
 using namespace std;
 using namespace std::chrono;
@@ -243,23 +245,25 @@ void t_floor(long count) {
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
 
-	int32_t b[8] = {10, 10, 10, 10, 10, 10, 10, 10};
+	int32_t b[8] = {1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
 	auto WINDOW_WIDTH_256 = _mm256_loadu_si256((__m256i*) &b);
 	
-	uint8_t BUFFER[150]; // should be large enough to not cause segfault
+	uint8_t BUFFER[13000]; // should be large enough to not cause segfault
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		auto xi = _mm256_cvttps_epi32(groups[(i*3) % 100]);
-		auto yi = _mm256_cvttps_epi32(groups[(i*7) % 100]);
-		xi = _mm256_srli_epi32(xi, 3); // divide by PHYSICS_SCALE
-		yi = _mm256_srli_epi32(yi, 3); // divide by PHYSICS_SCALE
-		yi = _mm256_mul_epi32(yi, WINDOW_WIDTH_256); // y*WINDOW_WIDTH
-		yi = _mm256_add_epi32(yi, xi); // y*WINDOW_WIDTH + x
+		for (int j = 0; j < 1400; j += 8) {
+			auto xi = _mm256_cvttps_epi32(groups[(i*3+j*2) % 100]);
+			auto yi = _mm256_cvttps_epi32(groups[(i*7+j*3) % 100]);
+			xi = _mm256_srli_epi32(xi, 3); // divide by PHYSICS_SCALE
+			yi = _mm256_srli_epi32(yi, 3); // divide by PHYSICS_SCALE
+			yi = _mm256_mul_epi32(yi, WINDOW_WIDTH_256); // y*WINDOW_WIDTH
+			yi = _mm256_add_epi32(yi, xi); // y*WINDOW_WIDTH + x
 
-		int32_t* Is = (int32_t*) &yi;
-		for (int j = 0; j < 8; j++) {
-			BUFFER[Is[j]] = 255;
+			int32_t* Is = (int32_t*) &yi;
+			for (int j = 0; j < 8; j++) {
+				BUFFER[Is[j]] = 255;
+			}
 		}
 	}
 	auto stop = timer.now();
@@ -275,30 +279,21 @@ void t_floorSlow(long count) {
 
 	high_resolution_clock timer;
 	float floats[100][8];
-	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
 			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
 		}
-		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
 
-	auto WINDOW_WIDTH = 10;
-	
-	uint8_t BUFFER[150]; // should be large enough to not cause segfault
+	auto WINDOW_WIDTH = 1000;
+	uint8_t BUFFER[13000]; // should be large enough to not cause segfault
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		auto xi = _mm256_cvttps_epi32(groups[(i*3) % 100]);
-		auto yi = _mm256_cvttps_epi32(groups[(i*7) % 100]);
-		xi = _mm256_srli_epi32(xi, 3); // divide by PHYSICS_SCALE
-		yi = _mm256_srli_epi32(yi, 3); // divide by PHYSICS_SCALE
-		yi = _mm256_mul_epi32(yi, WINDOW_WIDTH_256); // y*WINDOW_WIDTH
-		yi = _mm256_add_epi32(yi, xi); // y*WINDOW_WIDTH + x
-
-		int32_t* Is = (int32_t*) &yi;
-		for (int j = 0; j < 8; j++) {
-			BUFFER[Is[j]] = 255;
+		for (int j = 0; j < 1400; j++) {
+			int x = static_cast<int>(std::floor(floats[	(i*3 + (j>>3)*5)  %  100	][	j%8	])) >> 3;
+			int y = static_cast<int>(std::floor(floats[	(i*3 + (j>>3)*3)  %  100	][	j%8	])) >> 3;
+			BUFFER[y*WINDOW_WIDTH + x] = 255;
 		}
 	}
 	auto stop = timer.now();
@@ -306,12 +301,9 @@ void t_floorSlow(long count) {
 	long long dt = duration_cast<nanoseconds>(stop - start).count();
 	double dtPer = (double)dt / count;
 
-	cout << "floor replacement - nanoseconds per avg: " << dtPer << endl;
+	cout << "floor original - nanoseconds per avg: " << dtPer << endl;
 
 }
-
-
-
  
 
 int main(void) {
@@ -327,7 +319,8 @@ int main(void) {
 	t_rsqrt(count);
 	t_rcp(count);
 	t_fmadd(count);
-	t_floor(count);
+	t_floor(1000);
+	t_floorSlow(1000);
 
 	return 0;
 }

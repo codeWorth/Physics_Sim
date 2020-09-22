@@ -101,8 +101,8 @@ void Particles::tick() { // only ever write to PIXEL_BUFFER_B
 		printf("%f\n", (dtTotal / (double)tickCount));
 	}
 
-	// float dts[8] = {dt, dt, dt, dt, dt, dt, dt, dt};
-	// __m256 DT_256 = _mm256_loadu_ps(dts);
+	float dts[8] = {dt, dt, dt, dt, dt, dt, dt, dt};
+	__m256 DT_256 = _mm256_loadu_ps(dts);
 
 	for (int i = 0; i < PARTICLE_COUNT; i++) {
 		this->vx[i] += this->ax[i] * dt;
@@ -113,7 +113,7 @@ void Particles::tick() { // only ever write to PIXEL_BUFFER_B
 		this->ay[i] = -GRAVITY;
 	}
 
-	this->tickBounceAndAttractSIMD();
+	this->tickBounceAndAttract();
 
 	for(int i = 0; i < PARTICLE_COUNT; i++) {
 		if (this->x[i] < PARTICLE_RADIUS) {
@@ -134,13 +134,19 @@ void Particles::tick() { // only ever write to PIXEL_BUFFER_B
 
 	std::fill(PIXEL_BUFFER_B, PIXEL_BUFFER_B + PIXEL_COUNT, 0);
 	for (int i = 0; i < PARTICLE_COUNT; i += 8) {
+		GLfloat x0 = this->x[i+7];
+		GLfloat y0 = this->y[i+7];
+		int x0i = static_cast<int>(std::floor(x0)) >> PHYSICS_SCALE_POWER;
+		int y0i = static_cast<int>(std::floor(y0)) >> PHYSICS_SCALE_POWER;
+		int bufferI = y0i*WINDOW_WIDTH + x0i;
+
 		auto x = _mm256_loadu_ps(this->x + i);
 		auto y = _mm256_loadu_ps(this->y + i);
 		auto xi = _mm256_cvttps_epi32(x);
 		auto yi = _mm256_cvttps_epi32(y);
 		xi = _mm256_srli_epi32(xi, PHYSICS_SCALE_POWER); // divide by PHYSICS_SCALE
 		yi = _mm256_srli_epi32(yi, PHYSICS_SCALE_POWER); // divide by PHYSICS_SCALE
-		yi = _mm256_mul_epi32(yi, WINDOW_WIDTH_256); // y*WINDOW_WIDTH
+		yi = _mm256_mullo_epi32(yi, WINDOW_WIDTH_256); // y*WINDOW_WIDTH
 		yi = _mm256_add_epi32(yi, xi); // y*WINDOW_WIDTH + x
 
 		int32_t* Is = (int32_t*) &yi;
