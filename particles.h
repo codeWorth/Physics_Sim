@@ -37,7 +37,7 @@ private:
 	float rsqrt_fast(float x) const;
 
 	__m256 PARTICLE_RADIUS2_256;
-	__m256 PARTICLE_DIAMETER_256;
+	__m256 PARTICLE_RADIUS_256;
 	__m256 ATTRACTION_256;
 	__m256 ONES_256;
 	__m256 ONE_HALFS_256;
@@ -49,10 +49,6 @@ private:
 	__m256i WINDOW_WIDTH_256;
 	__m256i ZEROS_256;
 
-	int* bounceIndecies;
-	IndexPair* pairList;
-	int** indexTable;
-
 };
 
 Particles::Particles(int count) {
@@ -62,20 +58,13 @@ Particles::Particles(int count) {
 	this->vy = (GLfloat*)_aligned_malloc(count*4, 256);
 	this->ax = (GLfloat*)_aligned_malloc(count*4, 256);
 	this->ay = (GLfloat*)_aligned_malloc(count*4, 256);
-	this->bounceIndecies = (int*)_aligned_malloc(count*4, 256);
-	this->pairList = new IndexPair[count];
-	this->indexTable = new int*[8];
-	for (int i = 0; i < 8; i++) {
-		this->indexTable[i] = (int*)_aligned_malloc(8*4, 256);
-	}
-	
 
 	hasTime = false;
 	tickCount = 0;
 	dtTotal = 0;
 
 	PARTICLE_RADIUS2_256 = _mm256_set1_ps(PARTICLE_RADIUS2);
-	PARTICLE_DIAMETER_256 = _mm256_set1_ps(PARTICLE_RADIUS*2);
+	PARTICLE_RADIUS_256 = _mm256_set1_ps(PARTICLE_RADIUS);
 	ATTRACTION_256 = _mm256_set1_ps(ATTRACTION); 
 	ZEROSF_256 = _mm256_set1_ps(0); 
 	ONES_256 = _mm256_set1_ps(1);
@@ -90,12 +79,6 @@ Particles::Particles(int count) {
 
 	int32_t a[8] = {7, 0, 1, 2, 3, 4, 5, 6};
 	ROTATE_RIGHT_256 = _mm256_loadu_si256((__m256i*) &a);
-
-	for (int k = 0; k < 8; k++) {
-		for (int n = 0; n < 8; n++) {
-			indexTable[k][n] = ((n + 15 - k) % 8) + 1;
-		}
-	}
 }
 
 Particles::~Particles() {
@@ -105,13 +88,6 @@ Particles::~Particles() {
 	delete[] this->vy;
 	delete[] this->ax;
 	delete[] this->ay;
-	delete[] this->bounceIndecies;
-	delete[] this->pairList;
-
-	for (int i = 0; i < 8; i++) {
-		delete[] this->indexTable[i];
-	}
-	delete[] this->indexTable;
 }
 
 
@@ -204,6 +180,7 @@ void Particles::tick() { // only ever write to PIXEL_BUFFER_B
 
 void Particles::tickBounceAndAttractSIMD() {
 
+	GLfloat indexArray[8] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f};
 	for (int i = 0; i < PARTICLE_COUNT; i += 8) {
 		auto ax = _mm256_load_ps(this->x + i);
 		auto ay = _mm256_load_ps(this->y + i);
@@ -211,22 +188,128 @@ void Particles::tickBounceAndAttractSIMD() {
 		auto avy = _mm256_load_ps(this->vy + i);
 		auto aax = _mm256_load_ps(this->ax + i);
 		auto aay = _mm256_load_ps(this->ay + i);
-		auto indexSection = _mm256_srai_epi32(ZEROS_256, 0);
 
-		for (int j = i; j < PARTICLE_COUNT; j += 8) {
+		auto bx = ax;
+		auto by = ay;
+		auto bvx = avx;
+		auto bvy = avy;
+		auto bax = aax;
+		auto bay = aay;
+
+		auto bIndex = _mm256_loadu_ps(indexArray);
+		auto indexOrig = _mm256_loadu_ps(indexArray);
+		for (int k = 0; k < 7; k++) {
+			bx = _mm256_permutevar8x32_ps(bx, ROTATE_RIGHT_256);
+			by = _mm256_permutevar8x32_ps(by, ROTATE_RIGHT_256);
+			bvx = _mm256_permutevar8x32_ps(bvx, ROTATE_RIGHT_256);
+			bvy = _mm256_permutevar8x32_ps(bvy, ROTATE_RIGHT_256);
+			bax = _mm256_permutevar8x32_ps(bax, ROTATE_RIGHT_256);
+			bay = _mm256_permutevar8x32_ps(bay, ROTATE_RIGHT_256);
+			bIndex = _mm256_permutevar8x32_ps(bIndex, ROTATE_RIGHT_256);
+
+			auto dx = _mm256_sub_ps(bx, ax);
+			auto dy = _mm256_sub_ps(by, ay);
+			auto dx2 = _mm256_mul_ps(dx, dx); // dx^2
+
+			auto r2 = _mm256_fmadd_ps(dy, dy, dx2); // dx^2 + dy^2
+			auto r2Greater = _mm256_cmp_ps(r2, PARTICLE_RADIUS2_256, _CMP_GE_OQ); // 0xFFFFFFFF if outside, 0 if inside
+
+			auto invR = _mm256_rsqrt_ps(r2); // 1 / sqrt(r^2) => 1/r
+			auto invR2 = _mm256_rcp_ps(r2); // 1 / r^2
+			invR2 = _mm256_mul_ps(invR, invR2); // 1/r * 1/r^2 = 1/r^3
+			invR2 = _mm256_and_ps(invR2, r2Greater); // mask out those within particle
+			auto invR_ATT = _mm256_mul_ps(ATTRACTION_256, invR2);
+			
+			aax = _mm256_fmadd_ps(dx, invR_ATT, aax);
+			aay = _mm256_fmadd_ps(dy, invR_ATT, aay);
+			bax = _mm256_fnmadd_ps(dx, invR_ATT, bax);
+			bay = _mm256_fnmadd_ps(dy, invR_ATT, bay);
+
+
+			// begin bounce code
+
+			auto mask = _mm256_cmp_ps(bIndex, indexOrig, _CMP_GT_OQ); // only do for index of b > index of a
+			mask = _mm256_andnot_ps(r2Greater, mask);
+			for (int i = 0; i < 8; i++) {
+				if (((uint32_t*)&mask)[i] != 0) {
+					printf("cum\n");
+				}
+			}
+
+			auto centerX = _mm256_add_ps(ax, bx);
+			auto centerY = _mm256_add_ps(ay, by);
+			centerX = _mm256_mul_ps(centerX, ONE_HALFS_256);
+			centerY = _mm256_mul_ps(centerY, ONE_HALFS_256);
+
+			auto dAx = _mm256_sub_ps(ax, centerX);
+			auto dAy = _mm256_sub_ps(ay, centerY);
+			auto dAlength = _mm256_fmadd_ps(dAx, dAx, _mm256_mul_ps(dAy, dAy));
+			dAlength = _mm256_rsqrt_ps(dAlength);
+
+			auto scale = _mm256_andnot_ps(mask, ONES_256); // ones where a doesn't overlap b
+			auto ratio = _mm256_and_ps(mask, _mm256_mul_ps(PARTICLE_RADIUS_256, dAlength)); // ratio where a does overlap b
+			scale = _mm256_or_ps(scale, ratio); // combine
+
+			ax = _mm256_fmadd_ps(scale, dAx, centerX);
+			ay = _mm256_fmadd_ps(scale, dAy, centerY);
+			bx = _mm256_fnmadd_ps(scale, dAx, centerX);
+			by = _mm256_fnmadd_ps(scale, dAy, centerY);
+
+
+			dx = _mm256_mul_ps(dx, invR); // normalize
+			dy = _mm256_mul_ps(dy, invR); // normalize
+
+			auto avAlongPerp = _mm256_fmadd_ps(avx, dx, _mm256_mul_ps(avy, dy)); // avx*dx + avy*dy
+			auto bvAlongPerp = _mm256_fmadd_ps(bvx, dx, _mm256_mul_ps(bvy, dy)); // bvx*dx + bvy*dy
+			auto avAlongPerpX = _mm256_mul_ps(avAlongPerp, dx);
+			auto avAlongPerpY = _mm256_mul_ps(avAlongPerp, dy);
+
+			auto dvx = _mm256_fmsub_ps(dx, bvAlongPerp, avAlongPerpX);
+			auto dvy = _mm256_fmsub_ps(dy, bvAlongPerp, avAlongPerpY);
+
+			mask = _mm256_and_ps(mask, ENERGY_LOSS_256);
+			avx = _mm256_fmadd_ps(dvx, mask, avx);
+			avy = _mm256_fmadd_ps(dvy, mask, avy);
+			bvx = _mm256_fnmadd_ps(dvx, mask, bvx);
+			bvy = _mm256_fnmadd_ps(dvy, mask, bvy);
+
+		}
+
+		// extra rotate to align b normally
+		bvx = _mm256_permutevar8x32_ps(bvx, ROTATE_RIGHT_256);
+		bvy = _mm256_permutevar8x32_ps(bvy, ROTATE_RIGHT_256);
+		bax = _mm256_permutevar8x32_ps(bax, ROTATE_RIGHT_256);
+		bay = _mm256_permutevar8x32_ps(bay, ROTATE_RIGHT_256);
+
+		_mm256_store_ps(this->x + i, bx);
+		_mm256_store_ps(this->y + i, by);
+		_mm256_store_ps(this->vx + i, bvx);
+		_mm256_store_ps(this->vy + i, bvy);
+		_mm256_store_ps(this->ax + i, bax);
+		_mm256_store_ps(this->ay + i, bay);
+
+		ax = bx;
+		ay = by;
+		avx = bvx;
+		avy = bvy;
+		aax = bax;
+		aay = bay;
+
+		for (int j = i+8; j < PARTICLE_COUNT; j += 8) {
 			auto bx = _mm256_load_ps(this->x + j);
 			auto by = _mm256_load_ps(this->y + j);
 			auto bvx = _mm256_load_ps(this->vx + j);
 			auto bvy = _mm256_load_ps(this->vy + j);
+			auto bax = _mm256_load_ps(this->ax + j);
+			auto bay = _mm256_load_ps(this->ay + j);
 
-			int count = 8 - (i == j);
-			for (int k = 0; k < count; k++) {
-				auto indexTableSection = _mm256_load_si256((__m256i*)(indexTable[k]));
-				indexTableSection = _mm256_add_epi32(indexTableSection, _mm256_set1_epi32(j));
+			for (int k = 0; k < 8; k++) {
 				bx = _mm256_permutevar8x32_ps(bx, ROTATE_RIGHT_256);
 				by = _mm256_permutevar8x32_ps(by, ROTATE_RIGHT_256);
 				bvx = _mm256_permutevar8x32_ps(bvx, ROTATE_RIGHT_256);
 				bvy = _mm256_permutevar8x32_ps(bvy, ROTATE_RIGHT_256);
+				bax = _mm256_permutevar8x32_ps(bax, ROTATE_RIGHT_256);
+				bay = _mm256_permutevar8x32_ps(bay, ROTATE_RIGHT_256);
 
 				auto dx = _mm256_sub_ps(bx, ax);
 				auto dy = _mm256_sub_ps(by, ay);
@@ -243,180 +326,66 @@ void Particles::tickBounceAndAttractSIMD() {
 				
 				aax = _mm256_fmadd_ps(dx, invR_ATT, aax);
 				aay = _mm256_fmadd_ps(dy, invR_ATT, aay);
+				bax = _mm256_fnmadd_ps(dx, invR_ATT, bax);
+				bay = _mm256_fnmadd_ps(dy, invR_ATT, bay);
 
-				auto mask = _mm256_or_si256(*(__m256i*)&r2Greater, indexSection);
-				mask = _mm256_cmpeq_epi32(mask, ZEROS_256);
 
-				auto nonZeroR2 = _mm256_cmp_ps(r2, ZEROSF_256, _CMP_NEQ_OQ);
-				mask = _mm256_and_si256(mask, *(__m256i*)&nonZeroR2); // don't try to bounce off distance == 0 particles
+				// begin bounce code
 
-				auto newIndecies = _mm256_and_si256(indexTableSection, mask);
-				indexSection = _mm256_or_si256(indexSection, newIndecies);
+				auto centerX = _mm256_add_ps(ax, bx);
+				auto centerY = _mm256_add_ps(ay, by);
+				centerX = _mm256_mul_ps(centerX, ONE_HALFS_256);
+				centerY = _mm256_mul_ps(centerY, ONE_HALFS_256);
+
+				auto dAx = _mm256_sub_ps(ax, centerX);
+				auto dAy = _mm256_sub_ps(ay, centerY);
+				auto dAlength = _mm256_fmadd_ps(dAx, dAx, _mm256_mul_ps(dAy, dAy));
+				dAlength = _mm256_rsqrt_ps(dAlength);
+
+				auto scale = _mm256_and_ps(r2Greater, ONES_256); // ones where a doesn't overlap b
+				auto ratio = _mm256_andnot_ps(r2Greater, _mm256_mul_ps(PARTICLE_RADIUS_256, dAlength)); // ratio where a does overlap b
+				scale = _mm256_or_ps(scale, ratio); // combine
+
+				ax = _mm256_fmadd_ps(scale, dAx, centerX);
+				ay = _mm256_fmadd_ps(scale, dAy, centerY);
+				bx = _mm256_fnmadd_ps(scale, dAx, centerX);
+				by = _mm256_fnmadd_ps(scale, dAy, centerY);
+
 
 				dx = _mm256_mul_ps(dx, invR); // normalize
 				dy = _mm256_mul_ps(dy, invR); // normalize
 
-				auto avAlongTan = _mm256_fnmadd_ps(avy, dx, _mm256_mul_ps(avx, dy)); // avy*-dx + avx*dy
-				auto avAlongTanX = _mm256_mul_ps(avAlongTan, dy);
-				auto avAlongPerpX = _mm256_sub_ps(avx, avAlongTanX);
-				auto negAvAlongTanY = _mm256_mul_ps(avAlongTan, dx);
-				auto avAlongPerpY = _mm256_add_ps(avy, negAvAlongTanY);
+				auto avAlongPerp = _mm256_fmadd_ps(avx, dx, _mm256_mul_ps(avy, dy)); // avx*dx + avy*dy
+				auto bvAlongPerp = _mm256_fmadd_ps(bvx, dx, _mm256_mul_ps(bvy, dy)); // bvx*dx + bvy*dy
+				auto avAlongPerpX = _mm256_mul_ps(avAlongPerp, dx);
+				auto avAlongPerpY = _mm256_mul_ps(avAlongPerp, dy);
 
-				auto bvAlongTan = _mm256_fnmadd_ps(bvy, dx, _mm256_mul_ps(bvx, dy)); // bvy*-dx + bvx*dy
-				auto bvAlongTanX = _mm256_mul_ps(bvAlongTan, dy);
-				auto bvAlongPerpX = _mm256_sub_ps(bvx, bvAlongTanX);
-				auto negBvAlongTanY = _mm256_mul_ps(bvAlongTan, dx);
-				auto bvAlongPerpY = _mm256_add_ps(bvy, negBvAlongTanY);
+				auto dvx = _mm256_fmsub_ps(dx, bvAlongPerp, avAlongPerpX);
+				auto dvy = _mm256_fmsub_ps(dy, bvAlongPerp, avAlongPerpY);
 
-				auto davx = _mm256_add_ps(avAlongTanX, bvAlongPerpX);
-				auto davy = _mm256_sub_ps(bvAlongPerpY, negAvAlongTanY);
-				auto dbvx = _mm256_add_ps(bvAlongTanX, avAlongPerpX);
-				auto dbvy = _mm256_sub_ps(avAlongPerpY, negBvAlongTanY);
-
-				avx = _mm256_fmadd_ps(davx, ENERGY_LOSS_256, avx);
-				avy = _mm256_fmadd_ps(davy, ENERGY_LOSS_256, avx);
-				bvx = _mm256_fmadd_ps(dbvx, ENERGY_LOSS_256, bvx);
-				bvy = _mm256_fmadd_ps(dbvy, ENERGY_LOSS_256, bvx);
+				auto energy = _mm256_andnot_ps(r2Greater, ENERGY_LOSS_256);
+				avx = _mm256_fmadd_ps(dvx, energy, avx);
+				avy = _mm256_fmadd_ps(dvy, energy, avy);
+				bvx = _mm256_fnmadd_ps(dvx, energy, bvx);
+				bvy = _mm256_fnmadd_ps(dvy, energy, bvy);
 
 			}
 
+			_mm256_store_ps(this->x + j, bx);
+			_mm256_store_ps(this->y + j, by);
+			_mm256_store_ps(this->vx + j, bvx);
+			_mm256_store_ps(this->vy + j, bvy);
+			_mm256_store_ps(this->ax + j, bax);
+			_mm256_store_ps(this->ay + j, bay);
 		}
 
-		_mm256_store_si256((__m256i*)(this->bounceIndecies + i), indexSection);
+		_mm256_store_ps(this->x + i, ax);
+		_mm256_store_ps(this->y + i, ay);
+		_mm256_store_ps(this->vx + i, avx);
+		_mm256_store_ps(this->vy + i, avy);
 		_mm256_store_ps(this->ax + i, aax);
 		_mm256_store_ps(this->ay + i, aay);
 
 	}
 
-	int pairCount = 0;
-	for (int i = 0; i < PARTICLE_COUNT; i++) {
-		int j = this->bounceIndecies[i];
-		if (j > i) {
-			pairList[pairCount].i = i;
-			pairList[pairCount].j = j - 1;
-			pairCount++;
-		}
-	}
-
-	GLfloat data[8][8];
-	for (int n = 0; n < pairCount; n += 8) {
-
-		int remaining = std::min(pairCount, n+8) - n;
-		for (int k = 0; k < remaining; k++) {
-			data[0][k] = this->x[pairList[n+k].i];
-			data[1][k] = this->y[pairList[n+k].i];
-			data[2][k] = this->vx[pairList[n+k].i];
-			data[3][k] = this->vy[pairList[n+k].i];
-			data[4][k] = this->x[pairList[n+k].j];
-			data[5][k] = this->y[pairList[n+k].j];
-			data[6][k] = this->vx[pairList[n+k].j];
-			data[7][k] = this->vy[pairList[n+k].j];
-		}
-
-		auto ax = _mm256_loadu_ps(data[0]);
-		auto ay = _mm256_loadu_ps(data[1]);
-		auto avx = _mm256_loadu_ps(data[2]);
-		auto avy = _mm256_loadu_ps(data[3]);
-
-		auto bx = _mm256_loadu_ps(data[4]);
-		auto by = _mm256_loadu_ps(data[5]);
-		auto bvx = _mm256_loadu_ps(data[6]);
-		auto bvy = _mm256_loadu_ps(data[7]);
-
-
-		auto dxOrig = _mm256_sub_ps(ax, bx);
-		auto dx = _mm256_and_ps(dxOrig, FLOAT_ABS_256); // abs( dxOrig ) by setting MSB of float to 0
-		auto dyOrig = _mm256_sub_ps(ay, by);
-		auto dy = _mm256_and_ps(dyOrig, FLOAT_ABS_256); // abs( dyOrig ) by setting MSB of float to 0
-
-		auto dx2 = _mm256_mul_ps(dx, dx);
-		auto dy2 = _mm256_mul_ps(dy, dy);
-
-		auto dyNotZero = _mm256_cmp_ps(dy, ZEROSF_256, _CMP_NEQ_OQ);
-		auto xOverY = _mm256_div_ps(dx, dy);
-		auto yOverX = _mm256_div_ps(dy, dx);
-
-		xOverY = _mm256_and_ps(dyNotZero, xOverY); // only have ratio != 0 where it is non-inf
-		yOverX = _mm256_andnot_ps(dyNotZero, yOverX); // anywhere that dy == 0, dx != 0 because of `don't try to bounce off distance == 0 particles`
-
-		auto xyRatio = _mm256_or_ps(xOverY, yOverX); // ratio should be defined everywhere (unless dx == 0 && dy == 0)
-		auto xyRatio2 = _mm256_mul_ps(xyRatio, xyRatio);
-
-
-		auto d1 = _mm256_add_ps(xyRatio2, ONES_256); 
-		d1 = _mm256_rsqrt_ps(d1);
-		d1 = _mm256_mul_ps(d1, PARTICLE_DIAMETER_256); // 1/sqrt(1 + ratio^2) * diameter
-		auto d2 = _mm256_mul_ps(d1, xyRatio); // d1 * ratio
-
-		auto dy_ = _mm256_and_ps(d1, dyNotZero); // where dy != 0, this is the correct formula
-		auto dx_ = _mm256_and_ps(d2, dyNotZero);
-
-		dy_ = _mm256_or_ps(dy_, _mm256_andnot_ps(dyNotZero, d2)); // where dy == 0, d1 and d2 should be swapped
-		dx_ = _mm256_or_ps(dx_, _mm256_andnot_ps(dyNotZero, d1));
-
-		auto ddx = _mm256_sub_ps(dx_, dx);
-		auto ddy = _mm256_sub_ps(dy_, dy);
-
-		auto aLessX = _mm256_cmp_ps(ax, bx, _CMP_LT_OQ);
-		auto aLessY = _mm256_cmp_ps(ay, by, _CMP_LT_OQ);
-
-		auto invertMultX = _mm256_and_ps(aLessX, NEGATIVE_ONE_HALFS_256); // if ax < bx, invert = -0.5
-		invertMultX = _mm256_or_ps(_mm256_andnot_ps(aLessX, ONE_HALFS_256), invertMultX); // if ax >= bx, invert = 0.5
-
-		auto invertMultY = _mm256_and_ps(aLessY, NEGATIVE_ONE_HALFS_256); // if ay < by, invert = -0.5
-		invertMultY = _mm256_or_ps(_mm256_andnot_ps(aLessY, ONE_HALFS_256), invertMultY); // if ay >= by, invert = 0.5
-
-		ax = _mm256_fmadd_ps(invertMultX, ddx, ax);
-		ay = _mm256_fmadd_ps(invertMultY, ddy, ay);
-		bx = _mm256_fnmadd_ps(invertMultX, ddx, bx);
-		by = _mm256_fnmadd_ps(invertMultY, ddy, by);
-		// rectify positions done now
-
-		auto invTanLen = _mm256_rsqrt_ps(_mm256_add_ps(dx2, dy2));
-		dxOrig = _mm256_mul_ps(dxOrig, invTanLen); // normalize
-		dyOrig = _mm256_mul_ps(dyOrig, invTanLen); // normalize
-
-		auto avAlongTan = _mm256_fnmadd_ps(avy, dxOrig, _mm256_mul_ps(avx, dyOrig)); // avy*-dx + avx*dy
-		auto avAlongTanX = _mm256_mul_ps(avAlongTan, dyOrig);
-		auto avAlongPerpX = _mm256_sub_ps(avx, avAlongTanX);
-		auto negAvAlongTanY = _mm256_mul_ps(avAlongTan, dxOrig);
-		auto avAlongPerpY = _mm256_add_ps(avy, negAvAlongTanY);
-
-		auto bvAlongTan = _mm256_fnmadd_ps(bvy, dxOrig, _mm256_mul_ps(bvx, dyOrig)); // bvy*-dx + bvx*dy
-		auto bvAlongTanX = _mm256_mul_ps(bvAlongTan, dyOrig);
-		auto bvAlongPerpX = _mm256_sub_ps(bvx, bvAlongTanX);
-		auto negBvAlongTanY = _mm256_mul_ps(bvAlongTan, dxOrig);
-		auto bvAlongPerpY = _mm256_add_ps(bvy, negBvAlongTanY);
-
-		avx = _mm256_add_ps(avAlongTanX, bvAlongPerpX);
-		avy = _mm256_sub_ps(bvAlongPerpY, negAvAlongTanY);
-		bvx = _mm256_add_ps(bvAlongTanX, avAlongPerpX);
-		bvy = _mm256_sub_ps(avAlongPerpY, negBvAlongTanY);
-
-		avx = _mm256_mul_ps(avx, ENERGY_LOSS_256);
-		avy = _mm256_mul_ps(avy, ENERGY_LOSS_256);
-		bvx = _mm256_mul_ps(bvx, ENERGY_LOSS_256);
-		bvy = _mm256_mul_ps(bvy, ENERGY_LOSS_256);
-
-		auto ax_ = (GLfloat*)&ax;
-		auto ay_ = (GLfloat*)&ay;
-		auto avx_ = (GLfloat*)&avx;
-		auto avy_ = (GLfloat*)&avy;
-		auto bx_ = (GLfloat*)&bx;
-		auto by_ = (GLfloat*)&by;
-		auto bvx_ = (GLfloat*)&bvx;
-		auto bvy_ = (GLfloat*)&bvy;
-
-		for (int k = 0; k < remaining; k++) {
-			this->x[pairList[n+k].i] = ax_[k];
-			this->y[pairList[n+k].i] = ay_[k];
-			// this->vx[pairList[n+k].i] = avx_[k];
-			// this->vy[pairList[n+k].i] = avy_[k];
-			this->x[pairList[n+k].j] = bx_[k];
-			this->y[pairList[n+k].j] = by_[k];
-			// this->vx[pairList[n+k].j] = bvx_[k];
-			// this->vy[pairList[n+k].j] = bvy_[k];
-		}
-
-	}
 }
