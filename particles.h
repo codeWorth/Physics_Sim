@@ -113,7 +113,7 @@ void Particles::tick() { // only ever write to PIXEL_BUFFER_B
 		this->ay[i] = -GRAVITY;
 	}
 
-	this->tickBounceAndAttract();
+	this->tickBounceAndAttractSIMD();
 
 	for(int i = 0; i < PARTICLE_COUNT; i++) {
 		if (this->x[i] < PARTICLE_RADIUS) {
