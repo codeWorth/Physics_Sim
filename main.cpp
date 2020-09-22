@@ -126,7 +126,6 @@ int main(void) {
 	gladLoadGL();
 	glfwSwapInterval(1);
 
-	srand(time(NULL));
 	GLuint shaderProgram = setupShaderProgram();
 	
 	GLuint textureID;
@@ -142,6 +141,7 @@ int main(void) {
 
 	std::thread PHYSICS_THREAD([]() {
 		Particles particles(PARTICLE_COUNT);
+		srand(time(NULL));
 		setupParticles(particles);
 		while (true) {
 			particles.tick();

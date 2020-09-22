@@ -208,6 +208,31 @@ void t_rcp(long count) {
 
 }
 
+void t_shift(long count) {
+
+	high_resolution_clock timer;
+	float floats[100][8];
+	__m256 groups[100];
+	for (int i = 0; i < 100; i++) {
+		for (int j = 0; j < 8; j++) {
+			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+		}
+		groups[i] = _mm256_loadu_ps(floats[i]);
+	}
+
+	auto start = timer.now();
+	for (long i = 0; i < count; i++) {
+		_mm256_slli_epi32(*(__m256i*)&groups[(i*7) % 100], 31);
+	}
+	auto stop = timer.now();
+	
+	long long dt = duration_cast<nanoseconds>(stop - start).count();
+	double dtPer = (double)dt / count;
+
+	cout << "_mm256_slli_epi32 - nanoseconds per avg: " << dtPer << endl;
+
+}
+
 void t_fmadd(long count) {
 
 	high_resolution_clock timer;
@@ -318,6 +343,7 @@ int main(void) {
 	t_and(count);
 	t_rsqrt(count);
 	t_rcp(count);
+	t_shift(count);
 	t_fmadd(count);
 	t_floor(1000);
 	t_floorSlow(1000);
