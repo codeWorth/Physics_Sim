@@ -7,8 +7,9 @@
 #include "constants.h"
 #include "GroupedArray.h"
 
-#define DRAW_CIRCLES true
-#define INV_LAW_RADIUS 4
+#define DRAW_CIRCLES false
+#define INV_LAW_RADIUS 2
+#define SAMPLE_ERROR false
 
 class Particles {
 public:
@@ -49,9 +50,12 @@ private:
 	void attractParticles(int i_, int j_);
 	void attractParticlesBoth(int i_, int j_);
 
-	void findSumXY(int region);
-	float* sumXs;
-	float* sumYs;
+	void findCoMs(int region);
+	float* coMx;
+	float* coMy;
+
+	float errAv[512];
+	long index = 0;
 
 	void updateRegions();
 	int particleRegion(GLfloat x, GLfloat y) const;
@@ -82,8 +86,8 @@ Particles::Particles(int count) :
 	ay(count, REGIONS_ACROSS*REGIONS_DOWN) 
 {
 
-	sumXs = new float[REGIONS_ACROSS*REGIONS_DOWN];
-	sumYs = new float[REGIONS_ACROSS*REGIONS_DOWN];
+	coMx = new float[REGIONS_ACROSS*REGIONS_DOWN];
+	coMy = new float[REGIONS_ACROSS*REGIONS_DOWN];
 
 	hasTime = false;
 	tickCount = 0;
@@ -110,8 +114,8 @@ Particles::Particles(int count) :
 }
 
 Particles::~Particles() {
-	delete[] sumXs;
-	delete[] sumYs;
+	delete[] coMx;
+	delete[] coMy;
 }
 
 void Particles::setup() {
@@ -146,20 +150,28 @@ void Particles::tick() {
 		printf("%f\n", (dtTotal / (double)tickCount));
 	}
 
+	
 	this->updateRegions();
 	this->updatePosition(dt);
 	for (int i = 0; i < REGIONS_ACROSS*REGIONS_DOWN; i++) {
-		findSumXY(i);
+		findCoMs(i);
 	}
 	this->bounceAndAttract();
 	this->wallBounce();
 	this->draw();
 
+	if (tickCount % 128 == 0 && SAMPLE_ERROR) {
+		GLfloat errTot = 0;
+		for (int i = 0; i < 512; i++) {
+			errTot += errAv[i];
+		}
+		errTot /= 5.12f;
+		printf("\terr: %f\n", errTot);
+	}
+
 }
 
 void Particles::updatePosition(GLfloat dt) {
-	// float dts[8] = {dt, dt, dt, dt, dt, dt, dt, dt};
-	// __m256 DT_256 = _mm256_loadu_ps(dts);
 	for (int i = 0; i < PARTICLE_COUNT; i++) {
 		float aa = this->ax[i];
 		this->vx[i] += this->ax[i] * dt;
@@ -207,9 +219,10 @@ void Particles::updateRegions() {
 
 void Particles::bounceAndAttract() {
 
-	float totalXs[8];
-	float totalYs[8];
-	float counts[8];
+	int sampleI = rand() % REGIONS_ACROSS;
+	int sampleJ = rand() % REGIONS_DOWN;
+	float ax_ = 0;
+	float ay_ = 0;
 
 	for (int i = 0; i < REGIONS_ACROSS; i++) {
 		for (int j = 0; j < REGIONS_DOWN; j++) {
@@ -232,21 +245,21 @@ void Particles::bounceAndAttract() {
 			if (x.groupSize(regionA) == 0) {
 				continue;
 			}
+			int start = x.groupStart(regionA);
 
-			// int s = x.groupStart(regionA);
-			// float ax_ = ax[s];
-			// float ay_ = ay[s];
-			// for (int h = 0; h < PARTICLE_COUNT; h++) {
-			// 	if (h == s) {
-			// 		continue;
-			// 	}
-			// 	GLfloat dx = x[h] - x[s];
-			// 	GLfloat dy = y[h] - y[s];
-			// 	GLfloat r = rsqrt_fast(dx*dx + dy*dy);
-			// 	GLfloat f = ATTRACTION * r*r*r;
-			// 	ax_ += f * dx;
-			// 	ay_ += f * dy;
-			// }
+			if (SAMPLE_ERROR && i == sampleI && j == sampleJ) {
+				for (int k = 0; k < PARTICLE_COUNT; k++) {
+					if (k == start) {
+						continue;
+					}
+					GLfloat dx = x[k] - x[start];
+					GLfloat dy = y[k] - y[start];
+					GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
+					GLfloat f = ATTRACTION * invR*invR*invR;
+					ax_ += f * dx;
+					ay_ += f * dy;
+				}
+			}
 
 			int i2Lower = std::max(0, i-INV_LAW_RADIUS);
 			int i2Upper = std::min(REGIONS_ACROSS, i+INV_LAW_RADIUS+1);
@@ -278,142 +291,69 @@ void Particles::bounceAndAttract() {
 			attractRegion(regionA);
 
 
-			// find center of mass of remaining quadrants
-			std::fill(totalXs, totalXs + 8, 0);
-			std::fill(totalYs, totalYs + 8, 0);
-			std::fill(counts, counts + 8, 0);
-
-			// top left corner
-			for (int j2 = 0; j2 < j2Lower; j2++) {
-				for (int i2 = 0; i2 < i2Lower; i2++) {
-					int region = regionIndex(i2, j2);
-					totalXs[0] += sumXs[region];
-					totalYs[0] += sumYs[region];
-					counts[0] += x.groupSize(region);
-				}
-			}
-			// top rectangle
-			for (int j2 = 0; j2 < j2Lower; j2++) {
-				for (int i2 = i2Lower; i2 < i2Upper; i2++) {
-					int region = regionIndex(i2, j2);
-					totalXs[1] += sumXs[region];
-					totalYs[1] += sumYs[region];
-					counts[1] += x.groupSize(region);
-				}
-			}
-			// top right corner
-			for (int j2 = 0; j2 < j2Lower; j2++) {
-				for (int i2 = i2Upper; i2 < REGIONS_ACROSS; i2++) {
-					int region = regionIndex(i2, j2);
-					totalXs[2] += sumXs[region];
-					totalYs[2] += sumYs[region];
-					counts[2] += x.groupSize(region);
-				}
-			}
-
-			// left rectangle
-			for (int j2 = j2Lower; j2 < j2Upper; j2++) {
-				for (int i2 = 0; i2 < i2Lower; i2++) {
-					int region = regionIndex(i2, j2);
-					totalXs[3] += sumXs[region];
-					totalYs[3] += sumYs[region];
-					counts[3] += x.groupSize(region);
-				}
-			}
-			// right rectangle
-			for (int j2 = j2Lower; j2 < j2Upper; j2++) {
-				for (int i2 = i2Upper; i2 < REGIONS_ACROSS; i2++) {
-					int region = regionIndex(i2, j2);
-					totalXs[4] += sumXs[region];
-					totalYs[4] += sumYs[region];
-					counts[4] += x.groupSize(region);
-				}
-			}
-
-			// bottom left corner
-			for (int j2 = j2Upper; j2 < REGIONS_DOWN; j2++) {
-				for (int i2 = 0; i2 < i2Lower; i2++) {
-					int region = regionIndex(i2, j2);
-					totalXs[5] += sumXs[region];
-					totalYs[5] += sumYs[region];
-					counts[5] += x.groupSize(region);
-				}
-			}
-			// bottom rectangle
-			for (int j2 = j2Upper; j2 < REGIONS_DOWN; j2++) {
-				for (int i2 = i2Lower; i2 < i2Upper; i2++) {
-					int region = regionIndex(i2, j2);
-					totalXs[6] += sumXs[region];
-					totalYs[6] += sumYs[region];
-					counts[6] += x.groupSize(region);
-				}
-			}
-			// bottom right corner
-			for (int j2 = j2Upper; j2 < REGIONS_DOWN; j2++) {
-				for (int i2 = i2Upper; i2 < REGIONS_ACROSS; i2++) {
-					int region = regionIndex(i2, j2);
-					totalXs[7] += sumXs[region];
-					totalYs[7] += sumYs[region];
-					counts[7] += x.groupSize(region);
-				}
-			}
-			
+			// do center of mass attraction for remaining sections
 			int size = x.groupSize(regionA);
 			int groupedSize = (size / 8) * 8;
-			int start = x.groupStart(regionA);
-			for (int k = 0; k < 8; k++) {
-				if (counts[k] > 0) {
-					totalXs[k] /= counts[k];
-					totalYs[k] /= counts[k];
-				}
-			}
 
-			for (int i2 = 0; i2 < groupedSize; i2 += 8) {
-				__m256 xs = _mm256_loadu_ps(x.data + start + i2);
-				__m256 ys = _mm256_loadu_ps(y.data + start + i2);
-				__m256 axs = _mm256_loadu_ps(ax.data + start + i2);
-				__m256 ays = _mm256_loadu_ps(ay.data + start + i2);
+			for (int k = 0; k < groupedSize; k += 8) {
+				__m256 xs = _mm256_loadu_ps(x.data + start + k);
+				__m256 ys = _mm256_loadu_ps(y.data + start + k);
+				__m256 axs = _mm256_loadu_ps(ax.data + start + k);
+				__m256 ays = _mm256_loadu_ps(ay.data + start + k);
 
-				for (int k = 0; k < 8; k++) {
-					if (counts[k] == 0) {
-						continue;
+				for (int i2 = 0; i2 < REGIONS_ACROSS; i2++) {
+					for (int j2 = 0; j2 < REGIONS_DOWN; j2++) {
+						int region = regionIndex(i2, j2);
+						float regionSize = x.groupSize(region);
+						if ((i2 >= i2Lower && i2 < i2Upper && j2 >= j2Lower && j2 < j2Upper) || regionSize == 0) {
+							continue;
+						}
+
+						__m256 F_256 = _mm256_set1_ps(ATTRACTION * regionSize);
+						__m256 CENTER_X_256 = _mm256_set1_ps(coMx[region]);
+						__m256 CENTER_Y_256 = _mm256_set1_ps(coMy[region]);
+
+						__m256 dx = _mm256_sub_ps(CENTER_X_256, xs);
+						__m256 dy = _mm256_sub_ps(CENTER_Y_256, ys);
+						__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
+						__m256 invR = _mm256_rsqrt_ps(r2);
+						__m256 f = _mm256_mul_ps(F_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // F / invR^3
+
+						axs = _mm256_fmadd_ps(f, dx, axs);
+						ays = _mm256_fmadd_ps(f, dy, ays);
 					}
-					__m256 F_256 = _mm256_set1_ps(ATTRACTION * counts[k]);
-					__m256 CENTER_X_256 = _mm256_set1_ps(totalXs[k]);
-					__m256 CENTER_Y_256 = _mm256_set1_ps(totalYs[k]);
-
-					__m256 dx = _mm256_sub_ps(CENTER_X_256, xs);
-					__m256 dy = _mm256_sub_ps(CENTER_Y_256, ys);
-					__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
-					__m256 invR = _mm256_rsqrt_ps(r2);
-					__m256 f = _mm256_mul_ps(F_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // F / invR^3
-
-					axs = _mm256_fmadd_ps(f, dx, axs);
-					ays = _mm256_fmadd_ps(f, dy, ays);
 				}
 
-				_mm256_storeu_ps(ax.data + start + i2, axs);
-				_mm256_storeu_ps(ay.data + start + i2, ays);
+				_mm256_storeu_ps(ax.data + start + k, axs);
+				_mm256_storeu_ps(ay.data + start + k, ays);	
+			
 			}
-			for (int i2 = groupedSize; i2 < size; i2++) {
-				for (int k = 0; k < 8; k++) {
-					if (counts[k] == 0) {
-						continue;
+			for (int k = groupedSize; k < size; k++) {
+				for (int i2 = 0; i2 < REGIONS_ACROSS; i2++) {
+					for (int j2 = 0; j2 < REGIONS_DOWN; j2++) {
+						int region = regionIndex(i2, j2);
+						float regionSize = x.groupSize(region);
+						if ((i2 >= i2Lower && i2 < i2Upper && j2 >= j2Lower && j2 < j2Upper) || regionSize == 0) {
+							continue;
+						}
+
+						GLfloat dx = coMx[region] - x[start + k];
+						GLfloat dy = coMy[region] - y[start + k];
+						GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
+						GLfloat f = ATTRACTION * regionSize * invR*invR*invR;
+
+						ax[start + k] += f * dx;
+						ay[start + k] += f * dy;
 					}
-					float dx = totalXs[k] - x[start + i2];
-					float dy = totalYs[k] - y[start + i2];
-					float invR = rsqrt_fast(dx*dx + dy*dy);
-					float f = ATTRACTION * counts[k] * invR*invR*invR; // f / invR^3
-					ax[start + i2] += f * dx;
-					ay[start + i2] += f * dy;
 				}
 			}
 
-			// if (i == 2 && j == 2) {
-			// 	GLfloat errX = (ax[s] - ax_)/ax_;
-			// 	GLfloat errY = (ay[s] - ay_)/ay_;
-			// 	printf("err: %f, %f\n", errX, errY);
-			// }
+			if (SAMPLE_ERROR && i == sampleI && j == sampleJ) {
+				GLfloat errX = (ax[start] - ax_) / ax_;
+				GLfloat errY = (ay[start] - ay_) / ay_;
+				errAv[index % 512] = std::sqrt(errX*errX + errY*errY);
+				index++;
+			}
 
 		}
 	}
@@ -464,11 +404,11 @@ void Particles::attractParticlesBoth(int i_, int j_) {
 	ay[j_] -= dy * f;
 }
 
-void Particles::findSumXY(int region) {
+void Particles::findCoMs(int region) {
 	int size = x.groupSize(region);
 	if (size == 0) {
-		sumXs[region] = 0;
-		sumYs[region] = 0;
+		coMx[region] = 0;
+		coMy[region] = 0;
 		return;
 	}
 
@@ -494,8 +434,8 @@ void Particles::findSumXY(int region) {
 		totalY += y[start + i];
 	}
 
-	sumXs[region] = totalX;
-	sumYs[region] = totalY;
+	coMx[region] = totalX / (float)size;
+	coMy[region] = totalY / (float)size;
 
 }
 
@@ -872,17 +812,6 @@ void Particles::wallBounce() {
 void Particles::draw() const {
 	// only ever write to PIXEL_BUFFER_B
 	std::fill(PIXEL_BUFFER_B, PIXEL_BUFFER_B + PIXEL_COUNT, 0);
-
-	for (int i = 1; i < REGIONS_ACROSS; i++) {
-		for (int j = 0; j < WINDOW_HEIGHT; j++) {
-			PIXEL_BUFFER_B[j*WINDOW_WIDTH + i*(REGION_WIDTH/PHYSICS_SCALE)] = 255;
-		}
-	}
-	for (int j = 1; j < REGIONS_DOWN; j++) {
-		for (int i = 0; i < WINDOW_WIDTH; i++) {
-			PIXEL_BUFFER_B[j*(REGION_WIDTH/PHYSICS_SCALE)*WINDOW_WIDTH + i] = 255;
-		}
-	}
 
 	for (int i = 0; i < PARTICLE_COUNT; i += 8) {
 

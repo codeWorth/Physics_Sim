@@ -135,7 +135,7 @@ int main(void) {
 
 	thread PHYSICS_THREAD([]() {
 		Particles particles(PARTICLE_COUNT);
-		srand(105); // srand(time(NULL));
+		srand(time(NULL));
 		particles.setup();
 		while (true) {
 			particles.tick();

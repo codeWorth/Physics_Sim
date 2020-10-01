@@ -20,9 +20,9 @@ const int REGIONS_DOWN = 16;
 const int REGION_WIDTH = PHYSICS_WIDTH / REGIONS_ACROSS;
 const int REGION_HEIGHT = PHYSICS_HEIGHT / REGIONS_DOWN;
 
-const GLfloat SIM_SPEED = 1;
+const GLfloat SIM_SPEED = 0.5;
 const GLfloat ENERGY_LOSS = 0.97;
-const GLfloat ATTRACTION = 500000;
+const GLfloat ATTRACTION = 300000;
 const GLfloat GRAVITY = 0;
 
 const int PARTICLE_COUNT = 3000;
