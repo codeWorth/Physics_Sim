@@ -14,11 +14,10 @@
 				"${workspaceFolder}\\src\\glad.c",
 
 				"-I${workspaceFolder}\\include",				
-				"-L${workspaceFolder}\\lib",
+				"-L${workspaceFolder}\\lib\\lib-mingw-w64",
 
 				"-lglfw3",
 				"-lgdi32",
-				"-lopengl32",
 
 				"-o",
 				"${workspaceFolder}\\bin\\main.exe"
