@@ -10,13 +10,11 @@
 				// "-g",
 				"-O3",
 
-				"${workspaceFolder}\\main.cpp",
-				"C:\\Users\\agcum\\Documents\\glad\\src\\glad.c",
+				"${workspaceFolder}\\src\\main.cpp",
+				"${workspaceFolder}\\src\\glad.c",
 
-				"-IC:\\Users\\agcum\\Documents\\glfw-3.3.2\\include",
-				"-IC:\\Users\\agcum\\Documents\\glad\\include",
-				
-				"-LC:\\Users\\agcum\\Documents\\glfw-3.3.2\\lib-mingw-w64",
+				"-I${workspaceFolder}\\include",				
+				"-L${workspaceFolder}\\lib",
 
 				"-lglfw3",
 				"-lgdi32",
@@ -25,7 +23,7 @@
 				"-lshell32",
 
 				"-o",
-				"${workspaceFolder}\\main.exe"
+				"${workspaceFolder}\\bin\\main.exe"
 			],
 			"options": {
 				"cwd": "${workspaceFolder}"
@@ -47,10 +45,10 @@
 				"-O0",
 				"-march=native",
 
-				"${workspaceFolder}\\benchmark.cpp",
+				"${workspaceFolder}\\src\\benchmark.cpp",
 
 				"-o",
-				"${workspaceFolder}\\benchmark.exe"
+				"${workspaceFolder}\\bin\\benchmark.exe"
 			],
 			"options": {
 				"cwd": "${workspaceFolder}"

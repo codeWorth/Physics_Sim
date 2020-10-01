@@ -3,9 +3,9 @@
         {
             "name": "Win32",
             "includePath": [
-				"${default}",
-				"C:\\Users\\agcum\\Documents\\glfw-3.3.2\\include",
-				"C:\\Users\\agcum\\Documents\\glad\\include"
+                "${default}",
+                "C:\\Users\\agcum\\Documents\\glfw-3.3.2\\include",
+                "C:\\Users\\agcum\\Documents\\glad\\include"
             ],
             "defines": [
                 "_DEBUG",
@@ -16,7 +16,8 @@
             "compilerPath": "C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools/MSVC/14.26.28801/bin/Hostx64/x64/cl.exe",
             "cStandard": "c11",
             "cppStandard": "c++17",
-            "intelliSenseMode": "msvc-x64"
+            "intelliSenseMode": "msvc-x64",
+            "configurationProvider": "ms-vscode.cmake-tools"
         }
     ],
     "version": 4

@@ -45,5 +45,6 @@
 		"algorithm": "cpp",
 		"array": "cpp",
 		"mutex": "cpp"
-	}
+	},
+	"cmake.configureOnOpen": true
 }
