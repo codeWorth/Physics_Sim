@@ -4,6 +4,8 @@
 #include <cmath>
 #include <algorithm>
 
+#include "GroupedArray.h"
+
 using namespace std;
 using namespace std::chrono;
 
@@ -13,13 +15,13 @@ void t_load(long count) {
 	float floats[100][8];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 	}
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		_mm256_loadu_ps(floats[(i*3) % 100]);
+		auto result = _mm256_loadu_ps(floats[(i*3) % 100]);
 	}
 	auto stop = timer.now();
 	
@@ -37,7 +39,7 @@ void t_permute(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
@@ -47,7 +49,7 @@ void t_permute(long count) {
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		_mm256_permutevar8x32_ps(groups[(i*3) % 100], permute);
+		auto result = _mm256_permutevar8x32_ps(groups[(i*3) % 100], permute);
 	}
 	auto stop = timer.now();
 	
@@ -65,14 +67,14 @@ void t_sub(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		_mm256_sub_ps(groups[(i*9) % 100], groups[(i*7) % 100]);
+		auto result = _mm256_sub_ps(groups[(i*9) % 100], groups[(i*7) % 100]);
 	}
 	auto stop = timer.now();
 	
@@ -90,14 +92,14 @@ void t_mul(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		_mm256_mul_ps(groups[(i*9) % 100], groups[(i*7) % 100]);
+		auto result = _mm256_mul_ps(groups[(i*9) % 100], groups[(i*7) % 100]);
 	}
 	auto stop = timer.now();
 	
@@ -115,14 +117,14 @@ void t_cmp(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		_mm256_cmp_ps(groups[(i*9) % 100], groups[(i*7) % 100], _CMP_GE_OQ);
+		auto result = _mm256_cmp_ps(groups[(i*9) % 100], groups[(i*7) % 100], _CMP_GE_OQ);
 	}
 	auto stop = timer.now();
 	
@@ -140,14 +142,14 @@ void t_and(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		_mm256_and_ps(groups[(i*9) % 100], groups[(i*7) % 100]);
+		auto result = _mm256_and_ps(groups[(i*9) % 100], groups[(i*7) % 100]);
 	}
 	auto stop = timer.now();
 	
@@ -165,14 +167,14 @@ void t_rsqrt(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		_mm256_rsqrt_ps(groups[(i*7) % 100]);
+		auto result = _mm256_rsqrt_ps(groups[(i*7) % 100]);
 	}
 	auto stop = timer.now();
 	
@@ -190,14 +192,14 @@ void t_rcp(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		_mm256_rcp_ps(groups[(i*7) % 100]);
+		auto result = _mm256_rcp_ps(groups[(i*7) % 100]);
 	}
 	auto stop = timer.now();
 	
@@ -215,7 +217,7 @@ void t_shift(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
@@ -240,14 +242,14 @@ void t_fmadd(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
 
 	auto start = timer.now();
 	for (long i = 0; i < count; i++) {
-		_mm256_fmadd_ps(groups[(i*3) % 100], groups[(i*7) % 100], groups[(i*5) % 100]);
+		auto result = _mm256_fmadd_ps(groups[(i*3) % 100], groups[(i*7) % 100], groups[(i*5) % 100]);
 	}
 	auto stop = timer.now();
 	
@@ -265,7 +267,7 @@ void t_floor(long count) {
 	__m256 groups[100];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 		groups[i] = _mm256_loadu_ps(floats[i]);
 	}
@@ -306,7 +308,7 @@ void t_floorSlow(long count) {
 	float floats[100][8];
 	for (int i = 0; i < 100; i++) {
 		for (int j = 0; j < 8; j++) {
-			floats[i][j] = (double)((i+j*3) % 1000) / 85.0f;
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
 		}
 	}
 
@@ -329,7 +331,113 @@ void t_floorSlow(long count) {
 	cout << "floor original - nanoseconds per avg: " << dtPer << endl;
 
 }
- 
+
+void t_permuate_sequential(long count) {
+
+	high_resolution_clock timer;
+	float floats[800];
+	for (int i = 0; i < 800; i++) {
+		floats[i] = (double)((i*3) % 1000) / 1285.0f;
+	}
+	int index[8] = {1, 2, 3, 4, 5, 6, 7, 0};
+	__m256i permute = _mm256_loadu_si256((__m256i*)&index);
+
+	__m256i missingMask = _mm256_set1_epi32(0);
+	((unsigned int*)&missingMask)[4] = 0xFFFFFFFF;
+
+	auto start = timer.now();
+	auto result =  _mm256_loadu_si256((__m256i*)floats);
+	for (long i = 1; i < count; i++) {
+		__m256i missing = _mm256_and_si256(result, missingMask);
+		result = _mm256_slli_si256(result, 4);
+		result = _mm256_or_si256(missing, result);
+		((float*)&result)[7] = floats[(i + 8) % 800];
+	}
+	auto stop = timer.now();
+	
+	long long dt = duration_cast<nanoseconds>(stop - start).count();
+	double dtPer = (double)dt / count;
+
+	cout << "_mm256_permutevar8x32_ps sequential - nanoseconds per avg: " << dtPer << endl;
+
+}
+
+void t_load_sequential(long count) {
+
+	high_resolution_clock timer;
+	float floats[800];
+	for (int i = 0; i < 800; i++) {
+		floats[i] = (double)((i*3) % 1000) / 1285.0f;
+	}
+
+	float dest[800];
+
+	auto start = timer.now();
+	for (long i = 0; i < count; i++) {
+		auto result = _mm256_loadu_ps(floats + (i % 800));
+		_mm256_storeu_ps(dest + (i % 800), result);
+	}
+	auto stop = timer.now();
+	
+	long long dt = duration_cast<nanoseconds>(stop - start).count();
+	double dtPer = (double)dt / count;
+
+	cout << "_mm256_loadu_ps sequential - nanoseconds per avg: " << dtPer << endl;
+
+}
+
+void t_rcpr3(long count) {
+
+	high_resolution_clock timer;
+	float floats[100][8];
+	__m256 groups[100];
+	for (int i = 0; i < 100; i++) {
+		for (int j = 0; j < 8; j++) {
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
+		}
+		groups[i] = _mm256_loadu_ps(floats[i]);
+	}
+
+	auto start = timer.now();
+	for (long i = 0; i < count; i++) {
+		auto invR = _mm256_rsqrt_ps(groups[(i*3) % 100]);
+		auto result = _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR));
+	}
+	auto stop = timer.now();
+	
+	long long dt = duration_cast<nanoseconds>(stop - start).count();
+	double dtPer = (double)dt / count;
+
+	cout << "_mm256_rsqrt_ps*3 - nanoseconds per avg: " << dtPer << endl;
+
+}
+
+void t_rcprrcpr2(long count) {
+
+	high_resolution_clock timer;
+	float floats[100][8];
+	__m256 groups[100];
+	for (int i = 0; i < 100; i++) {
+		for (int j = 0; j < 8; j++) {
+			floats[i][j] = (double)((i+j*3) % 1000) / 1285.0f;
+		}
+		groups[i] = _mm256_loadu_ps(floats[i]);
+	}
+
+	auto start = timer.now();
+	for (long i = 0; i < count; i++) {
+		auto invR = _mm256_rsqrt_ps(groups[(i*3) % 100]);
+		auto invR2 = _mm256_rcp_ps(groups[(i*3) % 100]);
+		auto result = _mm256_mul_ps(invR, invR2);
+	}
+	auto stop = timer.now();
+	
+	long long dt = duration_cast<nanoseconds>(stop - start).count();
+	double dtPer = (double)dt / count;
+
+	cout << "_mm256_rsqrt_ps * _mm256_rcp_ps - nanoseconds per avg: " << dtPer << endl;
+
+}
 
 int main(void) {
 
@@ -345,8 +453,12 @@ int main(void) {
 	t_rcp(count);
 	t_shift(count);
 	t_fmadd(count);
+	t_load_sequential(count);
+	t_permuate_sequential(count);
 	t_floor(1000);
 	t_floorSlow(1000);
+	t_rcpr3(count);
+	t_rcprrcpr2(count);
 
 	return 0;
 }

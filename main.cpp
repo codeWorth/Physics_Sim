@@ -3,9 +3,14 @@
 #include <stdlib.h>
 #include <string>
 #include <thread>
+#include <iostream>
+#include <chrono>
 
 #include "constants.h"
 #include "particles.h"
+
+using namespace std::chrono;
+using namespace std;
 
 static const GLfloat SQUARE_VERTECIES[] = {
 	-1.0f, -1.0f, 0.0f,
@@ -62,17 +67,6 @@ GLuint createProgram(GLuint const* shaders, int count) {
 	}
 
 	return programID;
-}
-
-void setupParticles(Particles& particles) {
-	for (int i = 0; i < PARTICLE_COUNT; i++) {
-		particles.x[i] = (double)rand() / RAND_MAX * PHYSICS_WIDTH;
-		particles.y[i] = (double)rand() / RAND_MAX * PHYSICS_HEIGHT;
-		particles.vx[i] = ((double)rand() / RAND_MAX - 0.5) * 2 * PARTICLE_SPEED;
-		particles.vy[i] = ((double)rand() / RAND_MAX - 0.5) * 2 * PARTICLE_SPEED;
-		particles.ax[i] = 0;
-		particles.ay[i] = 0;
-	}
 }
 
 GLuint setupShaderProgram() {
@@ -139,20 +133,27 @@ int main(void) {
 	glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(SQUARE_VERTECIES), SQUARE_VERTECIES, GL_STATIC_DRAW);
 
-	std::thread PHYSICS_THREAD([]() {
+	thread PHYSICS_THREAD([]() {
 		Particles particles(PARTICLE_COUNT);
-		srand(time(NULL));
-		setupParticles(particles);
+		srand(105); // srand(time(NULL));
+		particles.setup();
 		while (true) {
 			particles.tick();
 		}
 	});
 
+	high_resolution_clock timer;
+	const long nanoPerFrame = 16666666; // 60 fps
+
 	glfwSetInputMode(window, GLFW_STICKY_KEYS, GL_TRUE);
 	while (glfwGetKey(window, GLFW_KEY_ESCAPE ) != GLFW_PRESS && glfwWindowShouldClose(window) == 0) {
+
+		auto t0 = timer.now();
 				
 		// only ever read from PIXEL_BUFFER_A
+		swapMutex.lock();
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, WINDOW_WIDTH, WINDOW_HEIGHT, 0, GL_RED, GL_UNSIGNED_BYTE, PIXEL_BUFFER_A);
+		swapMutex.unlock();
 
 		glEnableVertexAttribArray(0);
 		glVertexAttribPointer(
@@ -170,6 +171,10 @@ int main(void) {
 
 		glfwSwapBuffers(window); /* Swap front and back buffers */
 		glfwPollEvents();
+
+		long dt = duration_cast<nanoseconds>(timer.now() - t0).count(); // maintain max of 60 fps
+		dt = max(0L, nanoPerFrame - dt);
+		this_thread::sleep_for(nanoseconds(dt));
 
 	}
 

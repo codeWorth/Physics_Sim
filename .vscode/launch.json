@@ -23,6 +23,7 @@
 					"ignoreFailures": true
 				}
 			],
+			// "preLaunchTask": "C/C++: g++.exe benchmark"
 			"preLaunchTask": "C/C++: g++.exe build main program"
 		}
 	]
