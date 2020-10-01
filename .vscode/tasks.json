@@ -19,8 +19,6 @@
 				"-lglfw3",
 				"-lgdi32",
 				"-lopengl32",
-				"-luser32",
-				"-lshell32",
 
 				"-o",
 				"${workspaceFolder}\\bin\\main.exe"
