@@ -35,13 +35,15 @@ private:
 	long tickCount;
 	double dtTotal;
 
+	void updateVelocity(GLfloat dt);
 	void updatePosition(GLfloat dt);
 	void wallBounce();
 	void draw() const;
 
-	void bounceAndAttract();
+	void bounce();
+	void attract();
 
-	void bounceRegions(int regionA, int regionB);
+	void bounceRegions(int regionA, int bStart, int bEnd);
 	void bounceRegion(int region);
 	void bounceParticles(int i_, int j_, GLfloat& dx, GLfloat& dy, GLfloat& r2);
 
@@ -156,9 +158,19 @@ void Particles::tick() {
 	for (int i = 0; i < REGIONS_ACROSS*REGIONS_DOWN; i++) {
 		findCoMs(i);
 	}
-	this->bounceAndAttract();
+	auto start = timer.now();
+	this->attract();
+	long t1 = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - start).count();
+	this->updateVelocity(dt);
+	start = timer.now();
+	this->bounce();
+	long t2 = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - start).count();
 	this->wallBounce();
 	this->draw();
+
+	if (tickCount % 128 == 0) {
+		printf("attract = %lu, \t bounce = %lu\n", t1, t2);
+	}
 
 	if (tickCount % 128 == 0 && SAMPLE_ERROR) {
 		GLfloat errTot = 0;
@@ -171,15 +183,19 @@ void Particles::tick() {
 
 }
 
-void Particles::updatePosition(GLfloat dt) {
+void Particles::updateVelocity(GLfloat dt) {
 	for (int i = 0; i < PARTICLE_COUNT; i++) {
-		float aa = this->ax[i];
 		this->vx[i] += this->ax[i] * dt;
 		this->vy[i] += this->ay[i] * dt;
-		this->x[i] += this->vx[i] * dt;
-		this->y[i] += this->vy[i] * dt;
 		this->ax[i] = 0;
 		this->ay[i] = -GRAVITY;
+	}
+}
+
+void Particles::updatePosition(GLfloat dt) {
+	for (int i = 0; i < PARTICLE_COUNT; i++) {
+		this->x[i] += this->vx[i] * dt;
+		this->y[i] += this->vy[i] * dt;
 	}
 }
 
@@ -217,27 +233,39 @@ void Particles::updateRegions() {
 	}
 }
 
-void Particles::bounceAndAttract() {
+void Particles::bounce() {
+
+	for (int i = 0; i < REGIONS_ACROSS; i++) {
+		for (int j = 0; j < REGIONS_DOWN; j++) {
+			int regionA = regionIndex(i, j);
+			bounceRegion(regionA);
+
+			if (i+1 < REGIONS_ACROSS) {
+				int regionB = regionIndex(i+1, j);
+				bounceRegions(regionA, x.groupStart(regionB), x.groupStart(regionB+1));
+			}
+
+			int j2 = j+1;
+			if (j2 < REGIONS_DOWN) {
+				int i2Lower = std::max(0, i-1);
+				int i2Upper = std::min(REGIONS_ACROSS, i+2);
+				bounceRegions(
+					regionA, 
+					x.groupStart(regionIndex(i2Lower, j2)), 
+					x.groupStart(regionIndex(i2Upper, j2))
+				);
+			}
+		}
+	}
+
+}
+
+void Particles::attract() {
 
 	int sampleI = rand() % REGIONS_ACROSS;
 	int sampleJ = rand() % REGIONS_DOWN;
 	float ax_ = 0;
 	float ay_ = 0;
-
-	for (int i = 0; i < REGIONS_ACROSS; i++) {
-		for (int j = 0; j < REGIONS_DOWN; j++) {
-			int regionA = regionIndex(i, j);
-			for (int i2 = std::max(0, i-1); i2 < std::min(REGIONS_ACROSS, i+2); i2++) {
-				for (int j2 = std::max(0, j-1); j2 < std::min(REGIONS_DOWN, j+2); j2++) {
-					if (i == i2 && j == j2) {
-						bounceRegion(regionA);
-					} else {
-						bounceRegions(regionA, regionIndex(i2, j2));
-					}
-				}
-			}
-		}
-	}
 
 	for (int i = 0; i < REGIONS_ACROSS; i++) {
 		for (int j = 0; j < REGIONS_DOWN; j++) {
@@ -672,19 +700,15 @@ void Particles::bounceRegion(int region) {
 	}
 }
 
-void Particles::bounceRegions(int regionA, int regionB) { // regionA != regionB
-	if (x.groupSize(regionA) > x.groupSize(regionB)) {
-		std::swap(regionA, regionB); // makes things easier if j_max is greater than i_max
-	}
-
+void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA shouldn't overlap regionB
 	int aStart = x.groupStart(regionA);
-	int bStart = x.groupStart(regionB);
+	int bSize = bEnd - bStart;
 	int eightGroupsA = (x.groupSize(regionA) / 8) * 8; // regionA in groups of 8, cut off extras for now
 
 	for (int i = 0; i < eightGroupsA; i += 8) {
 
 		for (int i_ = 0; i_ < 8; i_++) { // missed by SIMD below
-			for (int j = 0; j < i_; j++) {
+			for (int j = 0; j < std::min(i_, bSize); j++) {
 				GLfloat dx = x[j + bStart] - x[i_ + i + aStart];
 				GLfloat dy = y[j + bStart] - y[i_ + i + aStart];
 				GLfloat r2 = dx*dx + dy*dy;
@@ -700,7 +724,7 @@ void Particles::bounceRegions(int regionA, int regionB) { // regionA != regionB
 		__m256 avy = _mm256_loadu_ps(vy.data + i + aStart);
 
 		// make sure that SIMD doesn't segfault
-		int endIndex = std::max(0, x.groupSize(regionB) - 8);
+		int endIndex = std::max(0, bSize - 8);
 		for (int j = 0; j < endIndex; j++) {
 			__m256 bx = _mm256_loadu_ps(x.data + j + bStart);
 			__m256 by = _mm256_loadu_ps(y.data + j + bStart);
@@ -763,7 +787,7 @@ void Particles::bounceRegions(int regionA, int regionB) { // regionA != regionB
 		_mm256_storeu_ps(vx.data + i + aStart, avx);
 		_mm256_storeu_ps(vy.data + i + aStart, avy);
 
-		int jMax = x.groupSize(regionB) - endIndex;
+		int jMax = bSize - endIndex;
 		for (int i_ = 0; i_ < 8; i_++) { // missed by SIMD above
 			for (int j_ = i_; j_ < jMax; j_++) {
 				GLfloat dx = x[j_ + endIndex + bStart] - x[i_ + i + aStart];
@@ -779,7 +803,7 @@ void Particles::bounceRegions(int regionA, int regionB) { // regionA != regionB
 
 	// deal with missing items at the end of region A, missed because of SIMD grouping
 	for (int i = eightGroupsA; i < x.groupSize(regionA); i++) {
-		for (int j = 0; j < x.groupSize(regionB); j++) {
+		for (int j = 0; j < bSize; j++) {
 			GLfloat dx = x[j + bStart] - x[i + aStart];
 			GLfloat dy = y[j + bStart] - y[i + aStart];
 			GLfloat r2 = dx*dx + dy*dy;

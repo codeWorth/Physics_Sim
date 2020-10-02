@@ -20,12 +20,12 @@ const int REGIONS_DOWN = 16;
 const int REGION_WIDTH = PHYSICS_WIDTH / REGIONS_ACROSS;
 const int REGION_HEIGHT = PHYSICS_HEIGHT / REGIONS_DOWN;
 
-const GLfloat SIM_SPEED = 0.5;
+const GLfloat SIM_SPEED = 1;
 const GLfloat ENERGY_LOSS = 0.97;
-const GLfloat ATTRACTION = 300000;
-const GLfloat GRAVITY = 0;
+const GLfloat ATTRACTION = 1;
+const GLfloat GRAVITY = 60;
 
-const int PARTICLE_COUNT = 3000;
+const int PARTICLE_COUNT = 5000;
 const int PARTICLE_RADIUS = PHYSICS_SCALE * 2;
 const int PARTICLE_RADIUS2 = PARTICLE_RADIUS * PARTICLE_RADIUS * 4;
 const GLfloat PARTICLE_SPEED = 400;

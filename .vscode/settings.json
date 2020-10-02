@@ -44,7 +44,22 @@
 		"thread": "cpp",
 		"algorithm": "cpp",
 		"array": "cpp",
-		"mutex": "cpp"
+		"mutex": "cpp",
+		"atomic": "cpp",
+		"*.tcc": "cpp",
+		"clocale": "cpp",
+		"condition_variable": "cpp",
+		"cstdarg": "cpp",
+		"ctime": "cpp",
+		"cwctype": "cpp",
+		"deque": "cpp",
+		"unordered_map": "cpp",
+		"memory_resource": "cpp",
+		"optional": "cpp",
+		"string_view": "cpp",
+		"fstream": "cpp",
+		"sstream": "cpp",
+		"cinttypes": "cpp"
 	},
 	"cmake.configureOnOpen": true
 }
