@@ -8,7 +8,7 @@
 #include "GroupedArray.h"
 
 const bool DRAW_CIRCLES = false;// draw the full circle for each particle, or just a single pixel
-const bool SAMPLE_ERROR = true;	// print acceleration error sampled from random particles
+const bool SAMPLE_ERROR = false;	// print acceleration error sampled from random particles
 
 // Size of box around each region for each the full calculation is done
 // This is highly dependent on personal preference, and the number and size
@@ -51,10 +51,10 @@ private:
 	void wallBounce();
 	void draw() const;
 
-	void bounce();
-	void bounceRegion(int region);
-	void bounceRegions(int regionA, int bStart, int bEnd);
-	void bounceParticles(int i_, int j_, GLfloat dx, GLfloat dy, GLfloat r2);
+	void bounce(GLfloat dt);
+	void bounceRegion(int region, GLfloat dt);
+	void bounceRegions(int regionA, int bStart, int bEnd, GLfloat dt);
+	void bounceParticles(int i_, int j_, GLfloat dx, GLfloat dy, GLfloat r2, GLfloat dt);
 
 	void attract();
 	void findCoMs();
@@ -70,9 +70,11 @@ private:
 
 	__m256 PARTICLE_RADIUS2_256;
 	__m256 PARTICLE_RADIUS_256;
+	__m256 PARTICLE_DIAMETER_256;
 	__m256 ATTRACTION_256;
 	__m256 ONE_HALFS_256;
-	__m256 ENERGY_LOSS_256;
+	__m256 ONE_256;
+	__m256 ENERGY_LOSS_PRIME_256;
 	__m256i WINDOW_WIDTH_256;
 
 };
@@ -98,8 +100,10 @@ Particles::Particles(int count) :
 	PARTICLE_RADIUS_256 = _mm256_set1_ps(PARTICLE_RADIUS);
 	ATTRACTION_256 = _mm256_set1_ps(ATTRACTION); 
 	ONE_HALFS_256 = _mm256_set1_ps(0.5f);
-	ENERGY_LOSS_256 = _mm256_set1_ps(ENERGY_LOSS);	
+	ONE_256 = _mm256_set1_ps(1.0f);
+	ENERGY_LOSS_PRIME_256 = _mm256_set1_ps(ENERGY_LOSS_PRIME);	
 	WINDOW_WIDTH_256 = _mm256_set1_epi32(WINDOW_WIDTH);
+	PARTICLE_DIAMETER_256 = _mm256_set1_ps(PARTICLE_RADIUS * 2);
 
 }
 
@@ -169,9 +173,7 @@ void Particles::tick() {
 		}
 	}	
 
-	auto start = timer.now();
 	this->attract();
-	long t1 = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - start).count();
 
 	if (SAMPLE_ERROR) {
 		GLfloat errX = (ax[s] - ax_) / ax_;
@@ -182,15 +184,9 @@ void Particles::tick() {
 	}
 
 	this->updateVelocity(dt); // update velocities based on acceleration BEFORE doing bounces
-	start = timer.now();
-	this->bounce();
-	long t2 = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - start).count();
+	this->bounce(dt);
 	this->wallBounce();
 	this->draw();
-
-	if (tickCount % 128 == 0) {
-		printf("attract = %lu, \t bounce = %lu\n", t1, t2);
-	}
 
 	if (tickCount % 128 == 0 && SAMPLE_ERROR) {
 		GLfloat errTot = 0;
@@ -336,7 +332,7 @@ void Particles::draw() const {
 	swapMutex.unlock();
 }
 
-void Particles::bounce() {
+void Particles::bounce(GLfloat dt) {
 
 	for (int i = 0; i < REGIONS_ACROSS; i++) {
 		for (int j = 0; j < REGIONS_DOWN; j++) {
@@ -345,7 +341,7 @@ void Particles::bounce() {
 			// bouncing within the region needs to be handeled seperately, because
 			// you don't want to bounce particle #4 w/ particle #7, then
 			// bounce particle #7 w/ particle #4 (since that's the same collision twice)
-			bounceRegion(regionA);
+			bounceRegion(regionA, dt);
 			
 			// After the above function call, we make it a rule to only collide with regions w/ a greater
 			// index than this one. This way, we never process a collision twice.
@@ -354,7 +350,7 @@ void Particles::bounce() {
 			// we need it to collide with the region to its right
 			if (i+1 < REGIONS_ACROSS) {
 				int regionB = regionIndex(i+1, j);
-				bounceRegions(regionA, x.groupStart(regionB), x.groupStart(regionB+1));
+				bounceRegions(regionA, x.groupStart(regionB), x.groupStart(regionB+1), dt);
 			}
 
 			// if we aren't on the bottom-most row,
@@ -371,7 +367,8 @@ void Particles::bounce() {
 				bounceRegions(
 					regionA, 
 					x.groupStart(regionIndex(i2Lower, j2)), 
-					x.groupStart(regionIndex(i2Upper, j2))
+					x.groupStart(regionIndex(i2Upper, j2)),
+					dt
 				);
 			}
 		}
@@ -379,8 +376,12 @@ void Particles::bounce() {
 
 }
 
-void Particles::bounceRegion(int region) {
+void Particles::bounceRegion(int region, GLfloat dt) {
 	// bounce particles within this region against each other
+	if (dt == 0) {
+		return;
+	}
+	__m256 dt_256 = _mm256_set1_ps(dt);
 
 	int start = x.groupStart(region);
 	int size = x.groupSize(region);
@@ -397,7 +398,7 @@ void Particles::bounceRegion(int region) {
 				GLfloat dy = y[j_ + i + start] - y[i_ + i + start];
 				GLfloat r2 = dx*dx + dy*dy;
 				if (r2 < PARTICLE_RADIUS2) {
-					bounceParticles(i_ + i + start, j_ + i + start, dx, dy, r2);
+					bounceParticles(i_ + i + start, j_ + i + start, dx, dy, r2, dt);
 				}
 			}
 		}
@@ -440,55 +441,45 @@ void Particles::bounceRegion(int region) {
 				__m256 bvx = _mm256_loadu_ps(vx.data + j + start);
 				__m256 bvy = _mm256_loadu_ps(vy.data + j + start);
 
-				__m256 bounceMult = _mm256_and_ps(ENERGY_LOSS_256, shouldBounce);
-				__m256 invR = _mm256_rsqrt_ps(r2); // rsqrt is so much faster than sqrt'ing and inverting wowow
+				__m256 r = _mm256_sqrt_ps(r2);
+				__m256 x = _mm256_sub_ps(r, PARTICLE_DIAMETER_256);
+				__m256 f = _mm256_mul_ps(x, dt_256);
 
-				// The following code shifts the colliding particles such that they are no longer touching
-				// This solves an issue with particles getting easily stuck together
-				// It simples takes the midpoint between the particles, finds their delta to that midpoint, and scales
-				// that delta such that the total distance between them is 2 * particle radius
-				__m256 ratio = _mm256_mul_ps(invR, PARTICLE_RADIUS_256);
-				ratio = _mm256_and_ps(ratio, shouldBounce); // set non-bounced to 0
-				ratio = _mm256_or_ps(ratio, _mm256_andnot_ps(shouldBounce, ONE_HALFS_256)); // set non-bounced to 1
-				__m256 midX = _mm256_add_ps(ax, bx);
-				midX = _mm256_mul_ps(midX, ONE_HALFS_256);
-				__m256 midY = _mm256_add_ps(ay, by);
-				midY = _mm256_mul_ps(midY, ONE_HALFS_256);
-
-				ax = _mm256_fnmadd_ps(dx, ratio, midX);
-				ay = _mm256_fnmadd_ps(dy, ratio, midY);
-				bx = _mm256_fmadd_ps(dx, ratio, midX);
-				by = _mm256_fmadd_ps(dy, ratio, midY);
-
-				// the following code calculates new velocities after the collision
+				__m256 invR = _mm256_rcp_ps(r);
 				dx = _mm256_mul_ps(dx, invR); // normalize
 				dy = _mm256_mul_ps(dy, invR);
+				__m256 dvx = _mm256_mul_ps(f, dx);
+				__m256 dvy = _mm256_mul_ps(f, dy);
 
-				__m256 avAlong = _mm256_fmadd_ps(avx, dx, _mm256_mul_ps(avy, dy)); // avx*dx + avy*dy, A's speed along line bewteen particles
-				__m256 bvAlong = _mm256_fmadd_ps(bvx, dx, _mm256_mul_ps(bvy, dy)); // bvx*dx + bvy*dy, B's speed along line bewteen particles
-				__m256 avxAlong = _mm256_mul_ps(avAlong, dx); // A's velocity along line bewteen particles
-				__m256 avyAlong = _mm256_mul_ps(avAlong, dy);
+				// calculate u (fudge factor)
+				__m256 dvabx = _mm256_sub_ps(bvx, avx);
+				__m256 dvaby = _mm256_sub_ps(bvy, avy);
+				__m256 B = _mm256_fmadd_ps(dvx, dvabx, _mm256_mul_ps(dvy, dvaby)); // dvx*dvavx + dvy*dvaby
+				__m256 dv2 = _mm256_fmadd_ps(dvx, dvx, _mm256_mul_ps(dvy, dvy)); // dvx^2 + dvy^2
 
-				__m256 davx = _mm256_fmsub_ps(bvAlong, dx, avxAlong);
-				__m256 davy = _mm256_fmsub_ps(bvAlong, dy, avyAlong);
-				__m256 dbvx = _mm256_fnmadd_ps(bvAlong, dx, avxAlong);
-				__m256 dbvy = _mm256_fnmadd_ps(bvAlong, dy, avyAlong);
+				__m256 result = _mm256_div_ps(B, dv2);
+				__m256i resultNegative = _mm256_srai_epi32(*(__m256i*)&result, 31); // use floating point sign bit
+				__m256 multMask = _mm256_andnot_ps(*(__m256*)&resultNegative, shouldBounce); // combine shouldBounce and !resultNegative
+				__m256 bounceMult = _mm256_and_ps(result, multMask); // mask out non-bounces
+				
+				avx = _mm256_fmadd_ps(bounceMult, dvx, avx);
+				avy = _mm256_fmadd_ps(bounceMult, dvy, avy);
+				bvx = _mm256_fnmadd_ps(bounceMult, dvx, bvx);
+				bvy = _mm256_fnmadd_ps(bounceMult, dvy, bvy);
 
-				avx = _mm256_fmadd_ps(bounceMult, davx, avx);
-				avy = _mm256_fmadd_ps(bounceMult, davy, avy);
-				bvx = _mm256_fmadd_ps(bounceMult, dbvx, bvx);
-				bvy = _mm256_fmadd_ps(bounceMult, dbvy, bvy);
+				__m256 k = _mm256_sub_ps(ONE_256, _mm256_and_ps(multMask, ENERGY_LOSS_PRIME_256)); // don't lose energy if failed to bounce
+				avx = _mm256_mul_ps(k, avx);
+				avy = _mm256_mul_ps(k, avy);
+				bvx = _mm256_mul_ps(k, bvx);
+				bvy = _mm256_mul_ps(k, bvy);
 
-				_mm256_storeu_ps(x.data + j + start, bx);
-				_mm256_storeu_ps(y.data + j + start, by);
 				_mm256_storeu_ps(vx.data + j + start, bvx);
 				_mm256_storeu_ps(vy.data + j + start, bvy);
+
 			}
 
 		}
 
-		_mm256_storeu_ps(x.data + i + start, ax);
-		_mm256_storeu_ps(y.data + i + start, ay);
 		_mm256_storeu_ps(vx.data + i + start, avx);
 		_mm256_storeu_ps(vy.data + i + start, avy);
 
@@ -499,7 +490,7 @@ void Particles::bounceRegion(int region) {
 				GLfloat dy = y[j_ + start] - y[i_ + i + start];
 				GLfloat r2 = dx*dx + dy*dy;
 				if (r2 < PARTICLE_RADIUS2) {
-					bounceParticles(i_ + i + start, j_ + start, dx, dy, r2);
+					bounceParticles(i_ + i + start, j_ + start, dx, dy, r2, dt);
 				}
 			}
 		}
@@ -515,14 +506,18 @@ void Particles::bounceRegion(int region) {
 			GLfloat dy = y[j + start] - y[i + start];
 			GLfloat r2 = dx*dx + dy*dy;
 			if (r2 < PARTICLE_RADIUS2) {
-				bounceParticles(i + start, j + start, dx, dy, r2);
+				bounceParticles(i + start, j + start, dx, dy, r2, dt);
 			}
 		}
 	}
 }
 
-void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA can't overlap regionB
+void Particles::bounceRegions(int regionA, int bStart, int bEnd, GLfloat dt) { // regionA can't overlap regionB
 	// This function is very similar to bounceRegion, so I'm not going to add many comments
+	if (dt == 0) {
+		return;
+	}
+	__m256 dt_256 = _mm256_set1_ps(dt);
 
 	int aStart = x.groupStart(regionA);
 	int bSize = bEnd - bStart;
@@ -536,7 +531,7 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA ca
 				GLfloat dy = y[j + bStart] - y[i_ + i + aStart];
 				GLfloat r2 = dx*dx + dy*dy;
 				if (r2 < PARTICLE_RADIUS2) {
-					bounceParticles(i_ + i + aStart, j + bStart, dx, dy, r2);
+					bounceParticles(i_ + i + aStart, j + bStart, dx, dy, r2, dt);
 				}
 			}
 		}
@@ -569,50 +564,45 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA ca
 				__m256 bvx = _mm256_loadu_ps(vx.data + j + bStart);
 				__m256 bvy = _mm256_loadu_ps(vy.data + j + bStart);
 
-				__m256 bounceMult = _mm256_and_ps(ENERGY_LOSS_256, shouldBounce);
-				__m256 invR = _mm256_rsqrt_ps(r2);
+				__m256 r = _mm256_sqrt_ps(r2);
+				__m256 x = _mm256_sub_ps(r, PARTICLE_DIAMETER_256);
+				__m256 f = _mm256_mul_ps(x, dt_256);
 
-				__m256 ratio = _mm256_mul_ps(invR, PARTICLE_RADIUS_256);
-				ratio = _mm256_and_ps(ratio, shouldBounce); // set non-bounced to 0
-				ratio = _mm256_or_ps(ratio, _mm256_andnot_ps(shouldBounce, ONE_HALFS_256)); // set non-bounced to 1
-				__m256 midX = _mm256_add_ps(ax, bx);
-				midX = _mm256_mul_ps(midX, ONE_HALFS_256);
-				__m256 midY = _mm256_add_ps(ay, by);
-				midY = _mm256_mul_ps(midY, ONE_HALFS_256);
-
-				ax = _mm256_fnmadd_ps(dx, ratio, midX);
-				ay = _mm256_fnmadd_ps(dy, ratio, midY);
-				bx = _mm256_fmadd_ps(dx, ratio, midX);
-				by = _mm256_fmadd_ps(dy, ratio, midY);
-
+				__m256 invR = _mm256_rcp_ps(r);
 				dx = _mm256_mul_ps(dx, invR); // normalize
 				dy = _mm256_mul_ps(dy, invR);
+				__m256 dvx = _mm256_mul_ps(f, dx);
+				__m256 dvy = _mm256_mul_ps(f, dy);
 
-				__m256 avAlong = _mm256_fmadd_ps(avx, dx, _mm256_mul_ps(avy, dy)); // avx*dx + avy*dy, A's speed along line bewteen particles
-				__m256 bvAlong = _mm256_fmadd_ps(bvx, dx, _mm256_mul_ps(bvy, dy)); // bvx*dx + bvy*dy, B's speed along line bewteen particles
-				__m256 avxAlong = _mm256_mul_ps(avAlong, dx); // A's velocity along line bewteen particles
-				__m256 avyAlong = _mm256_mul_ps(avAlong, dy);
+				// calculate u (fudge factor)
+				__m256 dvabx = _mm256_sub_ps(bvx, avx);
+				__m256 dvaby = _mm256_sub_ps(bvy, avy);
+				__m256 B = _mm256_fmadd_ps(dvx, dvabx, _mm256_mul_ps(dvy, dvaby)); // dvx*dvavx + dvy*dvaby
+				__m256 dv2 = _mm256_fmadd_ps(dvx, dvx, _mm256_mul_ps(dvy, dvy)); // dvx^2 + dvy^2
 
-				__m256 davx = _mm256_fmsub_ps(bvAlong, dx, avxAlong);
-				__m256 davy = _mm256_fmsub_ps(bvAlong, dy, avyAlong);
-				__m256 dbvx = _mm256_fnmadd_ps(bvAlong, dx, avxAlong);
-				__m256 dbvy = _mm256_fnmadd_ps(bvAlong, dy, avyAlong);
+				__m256 result = _mm256_div_ps(B, dv2);
+				__m256i resultNegative = _mm256_srai_epi32(*(__m256i*)&result, 31); // use floating point sign bit
+				result = _mm256_andnot_ps(*(__m256*)&resultNegative, result); // mask out negative results to 0
+				__m256 bounceMult = _mm256_and_ps(result, shouldBounce); // mask out non-bounces
+				
+				avx = _mm256_fmadd_ps(bounceMult, dvx, avx);
+				avy = _mm256_fmadd_ps(bounceMult, dvy, avy);
+				bvx = _mm256_fnmadd_ps(bounceMult, dvx, bvx);
+				bvy = _mm256_fnmadd_ps(bounceMult, dvy, bvy);
 
-				avx = _mm256_fmadd_ps(bounceMult, davx, avx);
-				avy = _mm256_fmadd_ps(bounceMult, davy, avy);
-				bvx = _mm256_fmadd_ps(bounceMult, dbvx, bvx);
-				bvy = _mm256_fmadd_ps(bounceMult, dbvy, bvy);
+				__m256 k = _mm256_sub_ps(ONE_256, _mm256_andnot_ps(*(__m256*)&resultNegative, ENERGY_LOSS_PRIME_256)); // don't lose energy if failed to bounce
+				avx = _mm256_mul_ps(k, avx);
+				avy = _mm256_mul_ps(k, avy);
+				bvx = _mm256_mul_ps(k, bvx);
+				bvy = _mm256_mul_ps(k, bvy);
 
-				_mm256_storeu_ps(x.data + j + bStart, bx);
-				_mm256_storeu_ps(y.data + j + bStart, by);
 				_mm256_storeu_ps(vx.data + j + bStart, bvx);
 				_mm256_storeu_ps(vy.data + j + bStart, bvy);
+
 			}
 
 		}
 
-		_mm256_storeu_ps(x.data + i + aStart, ax);
-		_mm256_storeu_ps(y.data + i + aStart, ay);
 		_mm256_storeu_ps(vx.data + i + aStart, avx);
 		_mm256_storeu_ps(vy.data + i + aStart, avy);
 
@@ -623,7 +613,7 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA ca
 				GLfloat dy = y[j_ + endIndex + bStart] - y[i_ + i + aStart];
 				GLfloat r2 = dx*dx + dy*dy;
 				if (r2 < PARTICLE_RADIUS2) {
-					bounceParticles(i_ + i + aStart, j_ + endIndex + bStart, dx, dy, r2);
+					bounceParticles(i_ + i + aStart, j_ + endIndex + bStart, dx, dy, r2, dt);
 				}
 			}
 		}
@@ -639,34 +629,41 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA ca
 			GLfloat dy = y[j + bStart] - y[i + aStart];
 			GLfloat r2 = dx*dx + dy*dy;
 			if (r2 < PARTICLE_RADIUS2) {
-				bounceParticles(i + aStart, j + bStart, dx, dy, r2);
+				bounceParticles(i + aStart, j + bStart, dx, dy, r2, dt);
 			}
 		}
 	}
 }
 
-void Particles::bounceParticles(int i_, int j_, GLfloat dx, GLfloat dy, GLfloat r2) {
+void Particles::bounceParticles(int i_, int j_, GLfloat dx, GLfloat dy, GLfloat r2, GLfloat dt) {
+
+	GLfloat r = std::sqrt(r2);
+	GLfloat x = r - PARTICLE_RADIUS*2;
+	GLfloat f = x * dt;
+
 	GLfloat invR = rsqrt_fast(r2);
 	dx *= invR;
 	dy *= invR;
+	GLfloat dvx = f*dx;
+	GLfloat dvy = f*dy;
 
-	GLfloat midX = (x[i_] + x[j_]) / 2;
-	GLfloat midY = (y[i_] + y[j_]) / 2;
-	x[i_] = midX - dx*PARTICLE_RADIUS;
-	y[i_] = midY - dy*PARTICLE_RADIUS;
-	x[j_] = midX + dx*PARTICLE_RADIUS;
-	y[j_] = midY + dy*PARTICLE_RADIUS;
+	GLfloat B = dvx * (vx[j_] - vx[i_]) + dvy * (vy[j_] - vy[i_]);
+	GLfloat dv2 = dvx*dvx + dvy*dvy;
+	GLfloat result = B/dv2;
+	result *= result > 0;
 
-	GLfloat avAlong = vx[i_]*dx + vy[i_]*dy;
-	GLfloat bvAlong = vx[j_]*dx + vy[j_]*dy;
-	GLfloat avxAlong = avAlong * dx;
-	GLfloat avyAlong = avAlong * dy;
-	GLfloat bvxAlong = bvAlong * dx;
-	GLfloat bvyAlong = bvAlong * dy;
-	vx[i_] += (bvxAlong - avxAlong) * ENERGY_LOSS;
-	vy[i_] += (bvyAlong - avyAlong) * ENERGY_LOSS;
-	vx[j_] += (avxAlong - bvxAlong) * ENERGY_LOSS;
-	vy[j_] += (avyAlong - bvyAlong) * ENERGY_LOSS;
+	vx[i_] += dvx * result;
+	vy[i_] += dvy * result;
+	vx[j_] -= dvx * result;
+	vy[j_] -= dvy * result;
+
+	GLfloat invK = 1 - ENERGY_LOSS_PRIME * (result > 0);
+
+	vx[i_] *= invK;
+	vy[i_] *= invK;
+	vx[j_] *= invK;
+	vy[j_] *= invK;
+
 }
 
 void Particles::attract() {
