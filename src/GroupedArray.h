@@ -19,6 +19,7 @@ public:
 
 	int groupStart(int groupIndex) const;
 	int groupSize(int groupIndex) const;
+	int* groupSize(); // don't modify this directly, it's here as non-const for SIMD purposes
 	int groupsCount() const;
 
 	T& operator[](int i);
@@ -174,6 +175,11 @@ template <typename T>
 int GroupedArray<T>::groupSize(int groupIndex) const {
 	assert(groupIndex >= 0 && groupIndex < groups);
 	return groupSizes[groupIndex];
+}
+
+template <typename T>
+int* GroupedArray<T>::groupSize() {
+	return groupSizes;
 }
 
 template <typename T>

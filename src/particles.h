@@ -7,9 +7,11 @@
 #include "constants.h"
 #include "GroupedArray.h"
 
-#define DRAW_CIRCLES false
-#define INV_LAW_RADIUS 2
-#define SAMPLE_ERROR false
+const bool DRAW_CIRCLES = false;// draw the full circle for each particle, or just a single pixel
+const int INV_LAW_RADIUS = 2;	// size of box around each region for each the full calculation is done
+const bool SAMPLE_ERROR = true;	// print acceleration error sampled from random particles
+const int KERNEL_RADIUS = 1;	// how large each center of mass kernel is (in regions, KERNEL_RADIUS = 1 means 3x3 square of regions are combined into 1)
+const int KERNEL_DISTANCE = 4;	// size of box around each region for each the kernel is used instead of the individual regions
 
 class Particles {
 public:
@@ -31,35 +33,37 @@ private:
 	std::chrono::steady_clock timer;
 	std::chrono::steady_clock::time_point lastTime;
 	bool hasTime;
-
 	long tickCount;
 	double dtTotal;
 
+	float* coMx;
+	float* coMy;
+	float* kernelCoMx;
+	float* kernelCoMy;
+	float* kernelCount;
+
+	float errAv[512];
+	long errIndex = 0;
+
 	void updateVelocity(GLfloat dt);
 	void updatePosition(GLfloat dt);
+	void updateRegions();
 	void wallBounce();
 	void draw() const;
 
 	void bounce();
-	void attract();
-
-	void bounceRegions(int regionA, int bStart, int bEnd);
 	void bounceRegion(int region);
+	void bounceRegions(int regionA, int bStart, int bEnd);
 	void bounceParticles(int i_, int j_, GLfloat& dx, GLfloat& dy, GLfloat& r2);
 
-	void attractRegions(int region, int start, int end);
+	void attract();
+	void findCoMs();
+	void attractToCoMs(int i, int j, int i2Lower, int i2Upper, int j2Lower, int j2Upper);
 	void attractRegion(int region);
+	void attractRegions(int region, int start, int end);
 	void attractParticles(int i_, int j_);
 	void attractParticlesBoth(int i_, int j_);
 
-	void findCoMs(int region);
-	float* coMx;
-	float* coMy;
-
-	float errAv[512];
-	long index = 0;
-
-	void updateRegions();
 	int particleRegion(GLfloat x, GLfloat y) const;
 	int regionIndex(int i, int j) const;
 	float rsqrt_fast(float x) const;
@@ -67,15 +71,9 @@ private:
 	__m256 PARTICLE_RADIUS2_256;
 	__m256 PARTICLE_RADIUS_256;
 	__m256 ATTRACTION_256;
-	__m256 ONES_256;
 	__m256 ONE_HALFS_256;
-	__m256 NEGATIVE_ONE_HALFS_256;
-	__m256 ZEROSF_256;
-	__m256 FLOAT_ABS_256;
 	__m256 ENERGY_LOSS_256;
-	__m256i ROTATE_RIGHT_256;
 	__m256i WINDOW_WIDTH_256;
-	__m256i ZEROS_256;
 
 };
 
@@ -91,6 +89,10 @@ Particles::Particles(int count) :
 	coMx = new float[REGIONS_ACROSS*REGIONS_DOWN];
 	coMy = new float[REGIONS_ACROSS*REGIONS_DOWN];
 
+	kernelCoMx = new float[REGIONS_ACROSS*REGIONS_DOWN];
+	kernelCoMy = new float[REGIONS_ACROSS*REGIONS_DOWN];
+	kernelCount = new float[REGIONS_ACROSS*REGIONS_DOWN];
+
 	hasTime = false;
 	tickCount = 0;
 	dtTotal = 0;
@@ -98,26 +100,18 @@ Particles::Particles(int count) :
 	PARTICLE_RADIUS2_256 = _mm256_set1_ps(PARTICLE_RADIUS2);
 	PARTICLE_RADIUS_256 = _mm256_set1_ps(PARTICLE_RADIUS);
 	ATTRACTION_256 = _mm256_set1_ps(ATTRACTION); 
-	ZEROSF_256 = _mm256_set1_ps(0); 
-	ONES_256 = _mm256_set1_ps(1);
 	ONE_HALFS_256 = _mm256_set1_ps(0.5f);
-	NEGATIVE_ONE_HALFS_256 = _mm256_set1_ps(-0.5f);
-	ENERGY_LOSS_256 = _mm256_set1_ps(ENERGY_LOSS);
-	
+	ENERGY_LOSS_256 = _mm256_set1_ps(ENERGY_LOSS);	
 	WINDOW_WIDTH_256 = _mm256_set1_epi32(WINDOW_WIDTH);
-	ZEROS_256 = _mm256_set1_epi32(0);
-
-	int32_t a[8] = {7, 0, 1, 2, 3, 4, 5, 6};
-	ROTATE_RIGHT_256 = _mm256_loadu_si256((__m256i*) &a);
-
-	__m256i tmp = _mm256_set1_epi32(0x7FFFFFFF);
-	FLOAT_ABS_256 = *(__m256*)&tmp;
 
 }
 
 Particles::~Particles() {
 	delete[] coMx;
 	delete[] coMy;
+	delete[] kernelCoMx;
+	delete[] kernelCoMy;
+	delete[] kernelCount;
 }
 
 void Particles::setup() {
@@ -148,19 +142,50 @@ void Particles::tick() {
 	dtTotal += dt;
 	tickCount++;
 
-	if (tickCount % 512 == 0) {
+	if (tickCount == 512) {
 		printf("%f\n", (dtTotal / (double)tickCount));
+		dtTotal = 0;
+		tickCount = 0;
 	}
 
 	
 	this->updateRegions();
 	this->updatePosition(dt);
-	for (int i = 0; i < REGIONS_ACROSS*REGIONS_DOWN; i++) {
-		findCoMs(i);
-	}
+	this->findCoMs();
+
+	// choose a random particle, and calculate the exact acceleration on it
+	// will be compared to the calculation found w/ the region based approximation
+	int sampleI = rand() % REGIONS_ACROSS;
+	int sampleJ = rand() % REGIONS_DOWN;
+	int s = regionIndex(sampleI, sampleJ);
+	float ax_ = 0;
+	float ay_ = 0;
+	if (SAMPLE_ERROR) {
+		for (int k = 0; k < PARTICLE_COUNT; k++) {
+			if (k == s) {
+				continue;
+			}
+			GLfloat dx = x[k] - x[s];
+			GLfloat dy = y[k] - y[s];
+			GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
+			GLfloat f = ATTRACTION * invR*invR*invR;
+			ax_ += f * dx;
+			ay_ += f * dy;
+		}
+	}	
+
 	auto start = timer.now();
 	this->attract();
 	long t1 = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - start).count();
+
+	if (SAMPLE_ERROR) {
+		GLfloat errX = (ax[s] - ax_) / ax_;
+		GLfloat errY = (ay[s] - ay_) / ay_;
+		// put this error in a buffer to reduce flucuations
+		errAv[errIndex % 512] = std::sqrt(errX*errX + errY*errY);
+		errIndex++;
+	}
+
 	this->updateVelocity(dt);
 	start = timer.now();
 	this->bounce();
@@ -178,7 +203,7 @@ void Particles::tick() {
 			errTot += errAv[i];
 		}
 		errTot /= 5.12f;
-		printf("\terr: %f\n", errTot);
+		printf("\terr: %.3f%\n", errTot);
 	}
 
 }
@@ -233,6 +258,67 @@ void Particles::updateRegions() {
 	}
 }
 
+void Particles::wallBounce() {
+	for(int i = 0; i < PARTICLE_COUNT; i++) {
+		if (this->x[i] < PARTICLE_RADIUS) {
+			this->x[i] = PARTICLE_RADIUS;
+			this->vx[i] = std::abs(this->vx[i]) * ENERGY_LOSS;
+		} else if (this->x[i] >= PHYSICS_WIDTH - PARTICLE_RADIUS) {
+			this->x[i] = PHYSICS_WIDTH - PARTICLE_RADIUS;
+			this->vx[i] = -std::abs(this->vx[i]) * ENERGY_LOSS;
+		}
+		if (this->y[i] < PARTICLE_RADIUS) {
+			this->y[i] = PARTICLE_RADIUS;
+			this->vy[i] = std::abs(this->vy[i]) * ENERGY_LOSS;
+		} else if (this->y[i] >= PHYSICS_HEIGHT - PARTICLE_RADIUS) {
+			this->y[i] = PHYSICS_HEIGHT - PARTICLE_RADIUS;
+			this->vy[i] = -std::abs(this->vy[i]) * ENERGY_LOSS;
+		}
+	}
+}
+
+void Particles::draw() const {
+	// only ever write to PIXEL_BUFFER_B
+	std::fill(PIXEL_BUFFER_B, PIXEL_BUFFER_B + PIXEL_COUNT, 0);
+
+	for (int i = 0; i < PARTICLE_COUNT; i += 8) {
+
+		auto X = _mm256_loadu_ps(this->x.data + i);
+		auto Y = _mm256_loadu_ps(this->y.data + i);
+		auto xi = _mm256_cvttps_epi32(X); // truncate and convert to int
+		auto yi = _mm256_cvttps_epi32(Y); // truncate and convert to int
+		xi = _mm256_srli_epi32(xi, PHYSICS_SCALE_POWER); // divide by PHYSICS_SCALE
+		yi = _mm256_srli_epi32(yi, PHYSICS_SCALE_POWER); // divide by PHYSICS_SCALE
+
+		int jMax = std::min(i + 8, PARTICLE_COUNT) - i;
+		if (DRAW_CIRCLES) {
+			for (int j = 0; j < jMax; j++) {
+				int x = ((int32_t*)&xi)[j];
+				int y = ((int32_t*)&yi)[j];
+				for (int y_ = std::max(0, y - PARTICLE_RADIUS/PHYSICS_SCALE); y_ < std::min(WINDOW_HEIGHT, y + PARTICLE_RADIUS/PHYSICS_SCALE); y_++) {
+					for (int x_ = std::max(0, x - PARTICLE_RADIUS/PHYSICS_SCALE); x_ < std::min(WINDOW_WIDTH, x + PARTICLE_RADIUS/PHYSICS_SCALE); x_++) {
+						if ((y-y_)*(y-y_) + (x-x_)*(x-x_) < PARTICLE_RADIUS*PARTICLE_RADIUS/PHYSICS_SCALE/PHYSICS_SCALE) {
+							PIXEL_BUFFER_B[y_*WINDOW_WIDTH + x_] = 255;
+						}
+					}
+				}
+			}
+		} else {
+			yi = _mm256_mullo_epi32(yi, WINDOW_WIDTH_256); // y*WINDOW_WIDTH
+			yi = _mm256_add_epi32(yi, xi); // y*WINDOW_WIDTH + x
+			int32_t* Is = (int32_t*) &yi;
+			for (int j = 0; j < jMax; j++) {
+				PIXEL_BUFFER_B[Is[j]] = 255;
+			}
+		}
+		
+	}
+
+	swapMutex.lock();
+	std::swap(PIXEL_BUFFER_A, PIXEL_BUFFER_B);
+	swapMutex.unlock();
+}
+
 void Particles::bounce() {
 
 	for (int i = 0; i < REGIONS_ACROSS; i++) {
@@ -258,331 +344,6 @@ void Particles::bounce() {
 		}
 	}
 
-}
-
-void Particles::attract() {
-
-	int sampleI = rand() % REGIONS_ACROSS;
-	int sampleJ = rand() % REGIONS_DOWN;
-	float ax_ = 0;
-	float ay_ = 0;
-
-	for (int i = 0; i < REGIONS_ACROSS; i++) {
-		for (int j = 0; j < REGIONS_DOWN; j++) {
-			int regionA = regionIndex(i, j);
-			if (x.groupSize(regionA) == 0) {
-				continue;
-			}
-			int start = x.groupStart(regionA);
-
-			if (SAMPLE_ERROR && i == sampleI && j == sampleJ) {
-				for (int k = 0; k < PARTICLE_COUNT; k++) {
-					if (k == start) {
-						continue;
-					}
-					GLfloat dx = x[k] - x[start];
-					GLfloat dy = y[k] - y[start];
-					GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
-					GLfloat f = ATTRACTION * invR*invR*invR;
-					ax_ += f * dx;
-					ay_ += f * dy;
-				}
-			}
-
-			int i2Lower = std::max(0, i-INV_LAW_RADIUS);
-			int i2Upper = std::min(REGIONS_ACROSS, i+INV_LAW_RADIUS+1);
-			int j2Lower = std::max(0, j-INV_LAW_RADIUS);
-			int j2Upper = std::min(REGIONS_DOWN, j+INV_LAW_RADIUS+1);
-
-			// do close attractions
-			for (int j2 = j2Lower; j2 < j; j2++) { // rows within close region above j
-				int dStart = x.groupStart(regionIndex(i2Lower, j2));
-				int dEnd = x.groupStart(regionIndex(i2Upper, j2));
-				attractRegions(regionA, dStart, dEnd);
-			}
-			for (int j2 = j+1; j2 < j2Upper; j2++) { // rows within close region below j
-				int dStart = x.groupStart(regionIndex(i2Lower, j2));
-				int dEnd = x.groupStart(regionIndex(i2Upper, j2));
-				attractRegions(regionA, dStart, dEnd);
-			}
-			
-			// row j within close region to the left of i
-			int dStart = x.groupStart(regionIndex(i2Lower, j));
-			int dEnd = x.groupStart(regionIndex(i, j));
-			attractRegions(regionA, dStart, dEnd);
-
-			// row j within close region to the right of i
-			dStart = x.groupStart(regionIndex(i+1, j));
-			dEnd = x.groupStart(regionIndex(i2Upper, j));
-			attractRegions(regionA, dStart, dEnd);
-
-			attractRegion(regionA);
-
-
-			// do center of mass attraction for remaining sections
-			int size = x.groupSize(regionA);
-			int groupedSize = (size / 8) * 8;
-
-			for (int k = 0; k < groupedSize; k += 8) {
-				__m256 xs = _mm256_loadu_ps(x.data + start + k);
-				__m256 ys = _mm256_loadu_ps(y.data + start + k);
-				__m256 axs = _mm256_loadu_ps(ax.data + start + k);
-				__m256 ays = _mm256_loadu_ps(ay.data + start + k);
-
-				for (int i2 = 0; i2 < REGIONS_ACROSS; i2++) {
-					for (int j2 = 0; j2 < REGIONS_DOWN; j2++) {
-						int region = regionIndex(i2, j2);
-						float regionSize = x.groupSize(region);
-						if ((i2 >= i2Lower && i2 < i2Upper && j2 >= j2Lower && j2 < j2Upper) || regionSize == 0) {
-							continue;
-						}
-
-						__m256 F_256 = _mm256_set1_ps(ATTRACTION * regionSize);
-						__m256 CENTER_X_256 = _mm256_set1_ps(coMx[region]);
-						__m256 CENTER_Y_256 = _mm256_set1_ps(coMy[region]);
-
-						__m256 dx = _mm256_sub_ps(CENTER_X_256, xs);
-						__m256 dy = _mm256_sub_ps(CENTER_Y_256, ys);
-						__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
-						__m256 invR = _mm256_rsqrt_ps(r2);
-						__m256 f = _mm256_mul_ps(F_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // F / invR^3
-
-						axs = _mm256_fmadd_ps(f, dx, axs);
-						ays = _mm256_fmadd_ps(f, dy, ays);
-					}
-				}
-
-				_mm256_storeu_ps(ax.data + start + k, axs);
-				_mm256_storeu_ps(ay.data + start + k, ays);	
-			
-			}
-			for (int k = groupedSize; k < size; k++) {
-				for (int i2 = 0; i2 < REGIONS_ACROSS; i2++) {
-					for (int j2 = 0; j2 < REGIONS_DOWN; j2++) {
-						int region = regionIndex(i2, j2);
-						float regionSize = x.groupSize(region);
-						if ((i2 >= i2Lower && i2 < i2Upper && j2 >= j2Lower && j2 < j2Upper) || regionSize == 0) {
-							continue;
-						}
-
-						GLfloat dx = coMx[region] - x[start + k];
-						GLfloat dy = coMy[region] - y[start + k];
-						GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
-						GLfloat f = ATTRACTION * regionSize * invR*invR*invR;
-
-						ax[start + k] += f * dx;
-						ay[start + k] += f * dy;
-					}
-				}
-			}
-
-			if (SAMPLE_ERROR && i == sampleI && j == sampleJ) {
-				GLfloat errX = (ax[start] - ax_) / ax_;
-				GLfloat errY = (ay[start] - ay_) / ay_;
-				errAv[index % 512] = std::sqrt(errX*errX + errY*errY);
-				index++;
-			}
-
-		}
-	}
-
-}
-
-void Particles::bounceParticles(int i_, int j_, GLfloat& dx, GLfloat& dy, GLfloat& r2) {
-	GLfloat invR = rsqrt_fast(r2);
-	dx *= invR;
-	dy *= invR;
-
-	GLfloat midX = (x[i_] + x[j_]) / 2;
-	GLfloat midY = (y[i_] + y[j_]) / 2;
-	x[i_] = midX - dx*PARTICLE_RADIUS;
-	y[i_] = midY - dy*PARTICLE_RADIUS;
-	x[j_] = midX + dx*PARTICLE_RADIUS;
-	y[j_] = midY + dy*PARTICLE_RADIUS;
-
-	GLfloat avAlong = vx[i_]*dx + vy[i_]*dy;
-	GLfloat bvAlong = vx[j_]*dx + vy[j_]*dy;
-	GLfloat avxAlong = avAlong * dx;
-	GLfloat avyAlong = avAlong * dy;
-	GLfloat bvxAlong = bvAlong * dx;
-	GLfloat bvyAlong = bvAlong * dy;
-	vx[i_] += (bvxAlong - avxAlong) * ENERGY_LOSS;
-	vy[i_] += (bvyAlong - avyAlong) * ENERGY_LOSS;
-	vx[j_] += (avxAlong - bvxAlong) * ENERGY_LOSS;
-	vy[j_] += (avyAlong - bvyAlong) * ENERGY_LOSS;
-}
-
-void Particles::attractParticles(int i_, int j_) {
-	GLfloat dx = x[j_] - x[i_];
-	GLfloat dy = y[j_] - y[i_];
-	GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
-	GLfloat f = ATTRACTION * invR*invR*invR;
-	ax[i_] += dx * f;
-	ay[i_] += dy * f;
-}
-
-void Particles::attractParticlesBoth(int i_, int j_) {
-	GLfloat dx = x[j_] - x[i_];
-	GLfloat dy = y[j_] - y[i_];
-	GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
-	GLfloat f = ATTRACTION * invR*invR*invR;
-	ax[i_] += dx * f;
-	ay[i_] += dy * f;
-	ax[j_] -= dx * f;
-	ay[j_] -= dy * f;
-}
-
-void Particles::findCoMs(int region) {
-	int size = x.groupSize(region);
-	if (size == 0) {
-		coMx[region] = 0;
-		coMy[region] = 0;
-		return;
-	}
-
-	int start = x.groupStart(region);
-	int groupedSize = (size / 8) * 8;
-
-	__m256 sumX = _mm256_set1_ps(0);
-	__m256 sumY = _mm256_set1_ps(0);
-	for (int i = 0; i < groupedSize; i += 8) {
-		sumX = _mm256_add_ps(sumX, _mm256_loadu_ps(x.data + start + i));
-		sumY = _mm256_add_ps(sumY, _mm256_loadu_ps(y.data + start + i));
-	}
-
-	float totalX = 0;
-	float totalY = 0;
-	for (int i = 0; i < 8; i++) {
-		totalX += ((float*)&sumX)[i];
-		totalY += ((float*)&sumY)[i];
-	}
-
-	for (int i = groupedSize; i < size; i++) {
-		totalX += x[start + i];
-		totalY += y[start + i];
-	}
-
-	coMx[region] = totalX / (float)size;
-	coMy[region] = totalY / (float)size;
-
-}
-
-void Particles::attractRegions(int region, int start, int end) {
-	if (start == end) {
-		return;
-	}
-	int regionStart = x.groupStart(region);
-	int regionSize = x.groupSize(region);
-	int bSize = end - start;
-	int simdSize = (regionSize / 8) * 8;
-
-	for (int i = 0; i < simdSize; i += 8) {
-		for (int i_ = 0; i_ < 8; i_++) {
-			for (int j = 0; j < std::min(i_, bSize); j++) {
-				attractParticles(i + i_ + regionStart, j + start);
-			}
-		}
-
-		__m256 ax = _mm256_loadu_ps(x.data + regionStart + i);
-		__m256 ay = _mm256_loadu_ps(y.data + regionStart + i);
-		__m256 aax = _mm256_loadu_ps(this->ax.data + regionStart + i);
-		__m256 aay = _mm256_loadu_ps(this->ay.data + regionStart + i);
-
-		int endIndex = std::max(0, bSize - 8);
-		for (int j = 0; j < endIndex; j++) {
-			__m256 bx = _mm256_loadu_ps(x.data + start + j);
-			__m256 by = _mm256_loadu_ps(y.data + start + j);
-			__m256 dx = _mm256_sub_ps(bx, ax);
-			__m256 dy = _mm256_sub_ps(by, ay);
-			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
-
-			__m256 invR = _mm256_rsqrt_ps(r2);
-			__m256 f = _mm256_mul_ps(ATTRACTION_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction / r^3
-
-			aax = _mm256_fmadd_ps(f, dx, aax);
-			aay = _mm256_fmadd_ps(f, dy, aay);
-		}
-
-		_mm256_storeu_ps(this->ax.data + regionStart + i, aax);
-		_mm256_storeu_ps(this->ay.data + regionStart + i, aay);
-
-		int jMax = bSize - endIndex;
-		for (int i_ = 0; i_ < 8; i_++) { // missed by SIMD above
-			for (int j_ = i_; j_ < jMax; j_++) {
-				attractParticles(i_ + i + regionStart, j_ + endIndex + start);
-			}
-		}
-	}
-
-	for (int i = simdSize; i < regionSize; i++) {
-		for (int j = 0; j < bSize; j++) {
-			attractParticles(i + regionStart, j + start);
-		}
-	}
-}
-
-void Particles::attractRegion(int region) {
-	int start = x.groupStart(region);
-	int size = x.groupSize(region);
-	int groupedSize = (size / 8) * 8;
-
-	for (int i = 0; i < groupedSize; i += 8) {
-
-		// handle cases where the SIMD regions could overlap, making updating the values weird
-		// for example, i = [0, 8), j = [1, 9)
-		for (int i_ = 0; i_ < 8; i_++) {
-			for (int j_ = i_+1; j_ < std::min(size - i, i_ + 8); j_++) {
-				attractParticlesBoth(i_ + i + start, j_ + i + start);
-			}
-		}
-
-		__m256 ax = _mm256_loadu_ps(x.data + i + start);
-		__m256 ay = _mm256_loadu_ps(y.data + i + start);
-		__m256 aax = _mm256_loadu_ps(this->ax.data + i + start);
-		__m256 aay = _mm256_loadu_ps(this->ay.data + i + start);
-
-		// size-8 to make sure that SIMD doesn't segfault
-		for (int j = i + 8; j < size - 8; j++) { // j set to i to avoid duplicate pairs (if we checked (3,5), we don't need to check (5,3))
-			__m256 bx = _mm256_loadu_ps(x.data + j + start);
-			__m256 by = _mm256_loadu_ps(y.data + j + start);
-			__m256 bax = _mm256_loadu_ps(this->ax.data + j + start);
-			__m256 bay = _mm256_loadu_ps(this->ay.data + j + start);
-
-			__m256 dx = _mm256_sub_ps(bx, ax);
-			__m256 dy = _mm256_sub_ps(by, ay);
-			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
-
-			__m256 invR = _mm256_rsqrt_ps(r2);
-			__m256 f = _mm256_mul_ps(ATTRACTION_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction / r^3
-
-			aax = _mm256_fmadd_ps(f, dx, aax);
-			aay = _mm256_fmadd_ps(f, dy, aay);
-			bax = _mm256_fnmadd_ps(f, dx, bax);
-			bay = _mm256_fnmadd_ps(f, dy, bay);
-
-			_mm256_storeu_ps(this->ax.data + j + start, bax);
-			_mm256_storeu_ps(this->ay.data + j + start, bay);
-
-		}
-
-		_mm256_storeu_ps(this->ax.data + i + start, aax);
-		_mm256_storeu_ps(this->ay.data + i + start, aay);
-
-		int bLast = std::max(i+8, size-8); // where did the previous for loop leave off?
-		for (int i_ = 0; i_ < 8; i_++) { // deal with missing items in this i-range because j couldn't get to the end (SIMD needs eight padding)
-			for (int j_ = i_ + bLast; j_ < size; j_++) {
-				attractParticlesBoth(i_ + i + start, j_ + start);
-			}
-		}
-
-	}
-
-	// deal with missing items at the end of region, missed because of SIMD grouping
-	for (int i = groupedSize; i < size; i++) {
-		for (int j = i+1; j < size; j++) {
-			attractParticlesBoth(i + start, j + start);
-		}
-	}
 }
 
 void Particles::bounceRegion(int region) {
@@ -614,8 +375,6 @@ void Particles::bounceRegion(int region) {
 		for (int j = i + 8; j < size - 8; j++) { // j set to i to avoid duplicate pairs (if we checked (3,5), we don't need to check (5,3))
 			__m256 bx = _mm256_loadu_ps(x.data + j + start);
 			__m256 by = _mm256_loadu_ps(y.data + j + start);
-			__m256 bvx = _mm256_loadu_ps(vx.data + j + start);
-			__m256 bvy = _mm256_loadu_ps(vy.data + j + start);
 
 			__m256 dx = _mm256_sub_ps(bx, ax);
 			__m256 dy = _mm256_sub_ps(by, ay);
@@ -626,6 +385,9 @@ void Particles::bounceRegion(int region) {
 			int anyBounce =  _mm256_movemask_ps(shouldBounce);
 
 			if (anyBounce != 0) {
+				__m256 bvx = _mm256_loadu_ps(vx.data + j + start);
+				__m256 bvy = _mm256_loadu_ps(vy.data + j + start);
+
 				__m256 bounceMult = _mm256_and_ps(ENERGY_LOSS_256, shouldBounce);
 				__m256 invR = _mm256_rsqrt_ps(r2);
 
@@ -728,8 +490,6 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA sh
 		for (int j = 0; j < endIndex; j++) {
 			__m256 bx = _mm256_loadu_ps(x.data + j + bStart);
 			__m256 by = _mm256_loadu_ps(y.data + j + bStart);
-			__m256 bvx = _mm256_loadu_ps(vx.data + j + bStart);
-			__m256 bvy = _mm256_loadu_ps(vy.data + j + bStart);
 
 			__m256 dx = _mm256_sub_ps(bx, ax);
 			__m256 dy = _mm256_sub_ps(by, ay);
@@ -740,6 +500,9 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA sh
 			int anyBounce =  _mm256_movemask_ps(shouldBounce);
 
 			if (anyBounce != 0) {
+				__m256 bvx = _mm256_loadu_ps(vx.data + j + bStart);
+				__m256 bvy = _mm256_loadu_ps(vy.data + j + bStart);
+
 				__m256 bounceMult = _mm256_and_ps(ENERGY_LOSS_256, shouldBounce);
 				__m256 invR = _mm256_rsqrt_ps(r2);
 
@@ -814,69 +577,421 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA sh
 	}
 }
 
-void Particles::wallBounce() {
-	for(int i = 0; i < PARTICLE_COUNT; i++) {
-		if (this->x[i] < PARTICLE_RADIUS) {
-			this->x[i] = PARTICLE_RADIUS;
-			this->vx[i] = std::abs(this->vx[i]) * ENERGY_LOSS;
-		} else if (this->x[i] >= PHYSICS_WIDTH - PARTICLE_RADIUS) {
-			this->x[i] = PHYSICS_WIDTH - PARTICLE_RADIUS;
-			this->vx[i] = -std::abs(this->vx[i]) * ENERGY_LOSS;
+void Particles::bounceParticles(int i_, int j_, GLfloat& dx, GLfloat& dy, GLfloat& r2) {
+	GLfloat invR = rsqrt_fast(r2);
+	dx *= invR;
+	dy *= invR;
+
+	GLfloat midX = (x[i_] + x[j_]) / 2;
+	GLfloat midY = (y[i_] + y[j_]) / 2;
+	x[i_] = midX - dx*PARTICLE_RADIUS;
+	y[i_] = midY - dy*PARTICLE_RADIUS;
+	x[j_] = midX + dx*PARTICLE_RADIUS;
+	y[j_] = midY + dy*PARTICLE_RADIUS;
+
+	GLfloat avAlong = vx[i_]*dx + vy[i_]*dy;
+	GLfloat bvAlong = vx[j_]*dx + vy[j_]*dy;
+	GLfloat avxAlong = avAlong * dx;
+	GLfloat avyAlong = avAlong * dy;
+	GLfloat bvxAlong = bvAlong * dx;
+	GLfloat bvyAlong = bvAlong * dy;
+	vx[i_] += (bvxAlong - avxAlong) * ENERGY_LOSS;
+	vy[i_] += (bvyAlong - avyAlong) * ENERGY_LOSS;
+	vx[j_] += (avxAlong - bvxAlong) * ENERGY_LOSS;
+	vy[j_] += (avyAlong - bvyAlong) * ENERGY_LOSS;
+}
+
+void Particles::attract() {
+
+	for (int i = 0; i < REGIONS_ACROSS; i++) {
+
+		// i-range that is close enough to do full inverse law calculation
+		int i2Lower = std::max(0, i-INV_LAW_RADIUS);
+		int i2Upper = std::min(REGIONS_ACROSS, i+INV_LAW_RADIUS+1);
+
+		for (int j = 0; j < REGIONS_DOWN; j++) {
+			int regionA = regionIndex(i, j);
+			if (x.groupSize(regionA) == 0) {
+				continue;
+			}
+			int start = x.groupStart(regionA);
+
+			// j-range that is close enough to do full inverse law calculation
+			int j2Lower = std::max(0, j-INV_LAW_RADIUS);
+			int j2Upper = std::min(REGIONS_DOWN, j+INV_LAW_RADIUS+1);	
+
+			// rows within close region above j
+			for (int j2 = j2Lower; j2 < j; j2++) {
+				int dStart = x.groupStart(regionIndex(i2Lower, j2));
+				int dEnd = x.groupStart(regionIndex(i2Upper, j2));
+				attractRegions(regionA, dStart, dEnd);
+			}
+			
+			// row j within close region to the left of i
+			int dStart = x.groupStart(regionIndex(i2Lower, j));
+			int dEnd = x.groupStart(regionIndex(i, j));
+			attractRegions(regionA, dStart, dEnd);
+
+			// within regionA
+			attractRegion(regionA);
+
+			// row j within close region to the right of i
+			dStart = x.groupStart(regionIndex(i+1, j));
+			dEnd = x.groupStart(regionIndex(i2Upper, j));
+			attractRegions(regionA, dStart, dEnd);
+
+			// rows within close region below j
+			for (int j2 = j+1; j2 < j2Upper; j2++) { 
+				int dStart = x.groupStart(regionIndex(i2Lower, j2));
+				int dEnd = x.groupStart(regionIndex(i2Upper, j2));
+				attractRegions(regionA, dStart, dEnd);
+			}
+
+			// for remaining regions, do attraction to the centers of mass
+			attractToCoMs(i, j, i2Lower, i2Upper, j2Lower, j2Upper);
 		}
-		if (this->y[i] < PARTICLE_RADIUS) {
-			this->y[i] = PARTICLE_RADIUS;
-			this->vy[i] = std::abs(this->vy[i]) * ENERGY_LOSS;
-		} else if (this->y[i] >= PHYSICS_HEIGHT - PARTICLE_RADIUS) {
-			this->y[i] = PHYSICS_HEIGHT - PARTICLE_RADIUS;
-			this->vy[i] = -std::abs(this->vy[i]) * ENERGY_LOSS;
+	}
+
+}
+
+void Particles::findCoMs() {
+	for (int region = 0; region < REGIONS_ACROSS*REGIONS_DOWN; region++) {
+		int size = x.groupSize(region);
+		if (size == 0) {
+			coMx[region] = 0;
+			coMy[region] = 0;
+			continue;
+		}
+
+		int start = x.groupStart(region);
+		int groupedSize = (size / 8) * 8;
+
+		__m256 sumX = _mm256_set1_ps(0);
+		__m256 sumY = _mm256_set1_ps(0);
+		for (int i = 0; i < groupedSize; i += 8) {
+			sumX = _mm256_add_ps(sumX, _mm256_loadu_ps(x.data + start + i));
+			sumY = _mm256_add_ps(sumY, _mm256_loadu_ps(y.data + start + i));
+		}
+
+		float totalX = 0;
+		float totalY = 0;
+		for (int i = 0; i < 8; i++) {
+			totalX += ((float*)&sumX)[i];
+			totalY += ((float*)&sumY)[i];
+		}
+
+		for (int i = groupedSize; i < size; i++) {
+			totalX += x[start + i];
+			totalY += y[start + i];
+		}
+
+		coMx[region] = totalX / (float)size;
+		coMy[region] = totalY / (float)size;
+	}
+
+	for (int j = KERNEL_RADIUS; j < REGIONS_DOWN - KERNEL_RADIUS; j++) {
+		for (int i = KERNEL_RADIUS; i < REGIONS_ACROSS - KERNEL_RADIUS; i++) {
+			int kernelIndex = regionIndex(i, j);
+			kernelCoMx[kernelIndex] = 0;
+			kernelCoMy[kernelIndex] = 0;
+			kernelCount[kernelIndex] = 0;
+
+			for (int j2 = j - KERNEL_RADIUS; j2 <= j + KERNEL_RADIUS; j2++) {
+				for (int i2 = i - KERNEL_RADIUS; i2 <= i + KERNEL_RADIUS; i2++) {
+					int region = regionIndex(i2, j2);
+					float size = x.groupSize(region);
+					kernelCoMx[region] += coMx[region] * size;
+					kernelCoMy[region] += coMy[region] * size;
+					kernelCount[region] += size;
+				}
+			}
+
+			kernelCoMx[kernelIndex] /= kernelCount[kernelIndex];
+			kernelCoMy[kernelIndex] /= kernelCount[kernelIndex];
 		}
 	}
 }
 
-void Particles::draw() const {
-	// only ever write to PIXEL_BUFFER_B
-	std::fill(PIXEL_BUFFER_B, PIXEL_BUFFER_B + PIXEL_COUNT, 0);
-
-	for (int i = 0; i < PARTICLE_COUNT; i += 8) {
-
-		auto X = _mm256_loadu_ps(this->x.data + i);
-		auto Y = _mm256_loadu_ps(this->y.data + i);
-		auto xi = _mm256_cvttps_epi32(X); // truncate and convert to int
-		auto yi = _mm256_cvttps_epi32(Y); // truncate and convert to int
-		xi = _mm256_srli_epi32(xi, PHYSICS_SCALE_POWER); // divide by PHYSICS_SCALE
-		yi = _mm256_srli_epi32(yi, PHYSICS_SCALE_POWER); // divide by PHYSICS_SCALE
-
-		int jMax = std::min(i + 8, PARTICLE_COUNT) - i;
-		if (DRAW_CIRCLES) {
-			for (int j = 0; j < jMax; j++) {
-				int x = ((int32_t*)&xi)[j];
-				int y = ((int32_t*)&yi)[j];
-				for (int y_ = std::max(0, y - PARTICLE_RADIUS/PHYSICS_SCALE); y_ < std::min(WINDOW_HEIGHT, y + PARTICLE_RADIUS/PHYSICS_SCALE); y_++) {
-					for (int x_ = std::max(0, x - PARTICLE_RADIUS/PHYSICS_SCALE); x_ < std::min(WINDOW_WIDTH, x + PARTICLE_RADIUS/PHYSICS_SCALE); x_++) {
-						if ((y-y_)*(y-y_) + (x-x_)*(x-x_) < PARTICLE_RADIUS*PARTICLE_RADIUS/PHYSICS_SCALE/PHYSICS_SCALE) {
-							PIXEL_BUFFER_B[y_*WINDOW_WIDTH + x_] = 255;
-						}
-					}
-				}
-			}
-		} else {
-			yi = _mm256_mullo_epi32(yi, WINDOW_WIDTH_256); // y*WINDOW_WIDTH
-			yi = _mm256_add_epi32(yi, xi); // y*WINDOW_WIDTH + x
-			int32_t* Is = (int32_t*) &yi;
-			for (int j = 0; j < jMax; j++) {
-				PIXEL_BUFFER_B[Is[j]] = 255;
+void Particles::attractToCoMs(int i, int j, int i2Lower, int i2Upper, int j2Lower, int j2Upper) {
+	float coMMask[REGIONS_ACROSS * REGIONS_DOWN];
+	for (int j2 = 0; j2 < REGIONS_DOWN; j2++) {
+		for (int i2 = 0; i2 < REGIONS_ACROSS; i2++) {
+			int regionB = regionIndex(i2, j2);
+			if (i2 >= i2Lower && i2 < i2Upper && j2 >= j2Lower && j2 < j2Upper) {
+				coMMask[regionB] = 0;
+			} else {
+				*(unsigned int*)(coMMask + regionB) = 0xFFFFFFFF;
 			}
 		}
-		
 	}
 
-	swapMutex.lock();
-	std::swap(PIXEL_BUFFER_A, PIXEL_BUFFER_B);
-	swapMutex.unlock();
+	int regionA = regionIndex(i, j);
+	int start = x.groupStart(regionA);
+	int size = x.groupSize(regionA);
+	int groupedSize = (size / 8) * 8;
+
+	int kD = KERNEL_RADIUS*2 + 1; // kernel diameter
+	int i2Lower_ = (std::max(0, i - KERNEL_DISTANCE) / kD) * kD;
+	int i2Upper_ = REGIONS_ACROSS - (std::max(0, REGIONS_ACROSS - 1 - KERNEL_DISTANCE - i) / kD) * kD;
+	int j2Lower_ = (std::max(0, j - KERNEL_DISTANCE) / kD) * kD;
+	int j2Upper_ = REGIONS_DOWN - (std::max(0, REGIONS_DOWN - 1 - KERNEL_DISTANCE - j) / kD) * kD;
+
+	for (int k = 0; k < groupedSize; k += 8) {
+		__m256 xs = _mm256_loadu_ps(x.data + start + k);
+		__m256 ys = _mm256_loadu_ps(y.data + start + k);
+		__m256 axs = _mm256_loadu_ps(ax.data + start + k);
+		__m256 ays = _mm256_loadu_ps(ay.data + start + k);
+
+		for (int i2 = 0; i2 < REGIONS_ACROSS*REGIONS_DOWN; i2++) {
+			float regionSize = x.groupSize(i2);
+			if (coMMask[i2] == 0 || regionSize == 0) {
+				continue;
+			}
+
+			__m256 F_256 = _mm256_set1_ps(ATTRACTION * regionSize);
+			__m256 CENTER_X_256 = _mm256_set1_ps(coMx[i2]);
+			__m256 CENTER_Y_256 = _mm256_set1_ps(coMy[i2]);
+
+			__m256 dx = _mm256_sub_ps(CENTER_X_256, xs);
+			__m256 dy = _mm256_sub_ps(CENTER_Y_256, ys);
+			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
+			__m256 invR = _mm256_rsqrt_ps(r2);
+			__m256 f = _mm256_mul_ps(F_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // F / invR^3
+
+			axs = _mm256_fmadd_ps(f, dx, axs);
+			ays = _mm256_fmadd_ps(f, dy, ays);
+		}
+
+		_mm256_storeu_ps(ax.data + start + k, axs);
+		_mm256_storeu_ps(ay.data + start + k, ays);	
+	
+	}
+
+	for (int k = groupedSize; k < size; k++) {
+		int regionsGrouped = ((REGIONS_ACROSS * REGIONS_DOWN) / 8) * 8;
+
+		__m256 x_256 = _mm256_set1_ps(x[start + k]);
+		__m256 y_256 = _mm256_set1_ps(y[start + k]);
+		__m256 dax = _mm256_set1_ps(0);
+		__m256 day = _mm256_set1_ps(0);
+
+		for (int i2 = 0; i2 < regionsGrouped; i2 += 8) {
+			__m256 coMx_256 = _mm256_loadu_ps(coMx + i2);
+			__m256 coMy_256 = _mm256_loadu_ps(coMy + i2);
+			__m256 mask = _mm256_loadu_ps(coMMask + i2);
+			__m256 regionSize = _mm256_cvtepi32_ps(_mm256_loadu_si256((__m256i*)(x.groupSize() + i2)));
+
+			__m256 dx = _mm256_sub_ps(coMx_256, x_256);
+			__m256 dy = _mm256_sub_ps(coMy_256, y_256);
+			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy));
+			__m256 invR = _mm256_rsqrt_ps(r2);
+			__m256 f = _mm256_mul_ps(ATTRACTION_256, regionSize);
+			f = _mm256_mul_ps(f, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction * regionSize / invR^3
+			f = _mm256_and_ps(f, mask); // set f within inner region to 0
+
+			dax = _mm256_fmadd_ps(f, dx, dax);
+			day = _mm256_fmadd_ps(f, dy, day);
+			
+		}
+
+		for (int h = 0; h < 8; h++) {
+			ax[start + k] += ((float*)&dax)[h];
+			ay[start + k] += ((float*)&day)[h];
+		}
+
+		for (int i2 = regionsGrouped; i2 < REGIONS_ACROSS * REGIONS_DOWN; i2++) {
+				float regionSize = x.groupSize(i2);
+				if (coMMask[i2] == 0 || regionSize == 0) {
+					continue;
+				}
+
+				GLfloat dx = coMx[i2] - x[start + k];
+				GLfloat dy = coMy[i2] - y[start + k];
+				GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
+				GLfloat f = ATTRACTION * regionSize * invR*invR*invR;
+
+				ax[start + k] += f * dx;
+				ay[start + k] += f * dy;
+		}
+	}
+
+}
+
+void Particles::attractRegions(int region, int start, int end) {
+	if (start == end) {
+		return;
+	}
+	int regionStart = x.groupStart(region);
+	int regionSize = x.groupSize(region);
+	int bSize = end - start;
+	int simdSize = (regionSize / 8) * 8;
+
+	for (int i = 0; i < simdSize; i += 8) {
+		for (int i_ = 0; i_ < 8; i_++) {
+			for (int j = 0; j < std::min(i_, bSize); j++) {
+				attractParticles(i + i_ + regionStart, j + start);
+			}
+		}
+
+		__m256 ax = _mm256_loadu_ps(x.data + regionStart + i);
+		__m256 ay = _mm256_loadu_ps(y.data + regionStart + i);
+		__m256 aax = _mm256_loadu_ps(this->ax.data + regionStart + i);
+		__m256 aay = _mm256_loadu_ps(this->ay.data + regionStart + i);
+
+		int endIndex = std::max(0, bSize - 8);
+		for (int j = 0; j < endIndex; j++) {
+			__m256 bx = _mm256_loadu_ps(x.data + start + j);
+			__m256 by = _mm256_loadu_ps(y.data + start + j);
+			__m256 dx = _mm256_sub_ps(bx, ax);
+			__m256 dy = _mm256_sub_ps(by, ay);
+			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
+
+			__m256 invR = _mm256_rsqrt_ps(r2);
+			__m256 f = _mm256_mul_ps(ATTRACTION_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction / r^3
+
+			aax = _mm256_fmadd_ps(f, dx, aax);
+			aay = _mm256_fmadd_ps(f, dy, aay);
+		}
+
+		_mm256_storeu_ps(this->ax.data + regionStart + i, aax);
+		_mm256_storeu_ps(this->ay.data + regionStart + i, aay);
+
+		int jMax = bSize - endIndex;
+		for (int i_ = 0; i_ < 8; i_++) { // missed by SIMD above
+			for (int j_ = i_; j_ < jMax; j_++) {
+				attractParticles(i_ + i + regionStart, j_ + endIndex + start);
+			}
+		}
+	}
+
+
+
+	for (int i = simdSize; i < regionSize; i++) {
+		int bGrouped = (bSize / 8) * 8;
+
+		__m256 ax_256 = _mm256_set1_ps(x[i + regionStart]);
+		__m256 ay_256 = _mm256_set1_ps(y[i + regionStart]);
+		__m256 dax = _mm256_set1_ps(0);
+		__m256 day = _mm256_set1_ps(0);
+
+		for (int j = 0; j < bGrouped; j += 8) {
+			__m256 bx_256 = _mm256_loadu_ps(x.data + j + start);
+			__m256 by_256 = _mm256_loadu_ps(y.data + j + start);
+
+			__m256 dx = _mm256_sub_ps(bx_256, ax_256);
+			__m256 dy = _mm256_sub_ps(by_256, ay_256);
+			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
+			__m256 invR = _mm256_rsqrt_ps(r2);
+			__m256 f = _mm256_mul_ps(ATTRACTION_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction / r^3
+
+			dax = _mm256_fmadd_ps(f, dx, dax);
+			day = _mm256_fmadd_ps(f, dy, day);
+		}
+		for (int h = 0; h < 8; h++) {
+			ax[i + regionStart] += ((float*)&dax)[h];
+			ay[i + regionStart] += ((float*)&day)[h];
+		}
+
+		for (int j = bGrouped; j < bSize; j++) {
+			attractParticles(i + regionStart, j + start);
+		}
+	}
+}
+
+void Particles::attractRegion(int region) {
+	int start = x.groupStart(region);
+	int size = x.groupSize(region);
+	int groupedSize = (size / 8) * 8;
+
+	for (int i = 0; i < groupedSize; i += 8) {
+
+		// handle cases where the SIMD regions could overlap, making updating the values weird
+		// for example, i = [0, 8), j = [1, 9)
+		for (int i_ = 0; i_ < 8; i_++) {
+			for (int j_ = i_+1; j_ < std::min(size - i, i_ + 8); j_++) {
+				attractParticlesBoth(i_ + i + start, j_ + i + start);
+			}
+		}
+
+		__m256 ax = _mm256_loadu_ps(x.data + i + start);
+		__m256 ay = _mm256_loadu_ps(y.data + i + start);
+		__m256 aax = _mm256_loadu_ps(this->ax.data + i + start);
+		__m256 aay = _mm256_loadu_ps(this->ay.data + i + start);
+
+		// size-8 to make sure that SIMD doesn't segfault
+		for (int j = i + 8; j < size - 8; j++) { // j set to i to avoid duplicate pairs (if we checked (3,5), we don't need to check (5,3))
+			__m256 bx = _mm256_loadu_ps(x.data + j + start);
+			__m256 by = _mm256_loadu_ps(y.data + j + start);
+			__m256 bax = _mm256_loadu_ps(this->ax.data + j + start);
+			__m256 bay = _mm256_loadu_ps(this->ay.data + j + start);
+
+			__m256 dx = _mm256_sub_ps(bx, ax);
+			__m256 dy = _mm256_sub_ps(by, ay);
+			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
+
+			__m256 invR = _mm256_rsqrt_ps(r2);
+			__m256 f = _mm256_mul_ps(ATTRACTION_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction / r^3
+
+			aax = _mm256_fmadd_ps(f, dx, aax);
+			aay = _mm256_fmadd_ps(f, dy, aay);
+			bax = _mm256_fnmadd_ps(f, dx, bax);
+			bay = _mm256_fnmadd_ps(f, dy, bay);
+
+			_mm256_storeu_ps(this->ax.data + j + start, bax);
+			_mm256_storeu_ps(this->ay.data + j + start, bay);
+
+		}
+
+		_mm256_storeu_ps(this->ax.data + i + start, aax);
+		_mm256_storeu_ps(this->ay.data + i + start, aay);
+
+		int bLast = std::max(i+8, size-8); // where did the previous for loop leave off?
+		for (int i_ = 0; i_ < 8; i_++) { // deal with missing items in this i-range because j couldn't get to the end (SIMD needs eight padding)
+			for (int j_ = i_ + bLast; j_ < size; j_++) {
+				attractParticlesBoth(i_ + i + start, j_ + start);
+			}
+		}
+
+	}
+
+	// deal with missing items at the end of region, missed because of SIMD grouping
+	for (int i = groupedSize; i < size; i++) {
+		for (int j = i+1; j < size; j++) {
+			attractParticlesBoth(i + start, j + start);
+		}
+	}
+}
+
+void Particles::attractParticles(int i_, int j_) {
+	GLfloat dx = x[j_] - x[i_];
+	GLfloat dy = y[j_] - y[i_];
+	GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
+	GLfloat f = ATTRACTION * invR*invR*invR;
+	ax[i_] += dx * f;
+	ay[i_] += dy * f;
+}
+
+void Particles::attractParticlesBoth(int i_, int j_) {
+	GLfloat dx = x[j_] - x[i_];
+	GLfloat dy = y[j_] - y[i_];
+	GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
+	GLfloat f = ATTRACTION * invR*invR*invR;
+	ax[i_] += dx * f;
+	ay[i_] += dy * f;
+	ax[j_] -= dx * f;
+	ay[j_] -= dy * f;
 }
 
 int Particles::particleRegion(GLfloat x, GLfloat y) const {
-	return static_cast<int>(y / REGION_HEIGHT)*REGIONS_ACROSS + static_cast<int>(x / REGION_WIDTH);
+	return 
+		REGIONS_ACROSS * std::min(
+			REGIONS_DOWN - 1, 
+			static_cast<int>(y / REGION_HEIGHT)) 
+		+ 
+		std::min(
+			REGIONS_ACROSS - 1,
+			static_cast<int>(x / REGION_WIDTH)
+		);
 }
 
 int Particles::regionIndex(int i, int j) const {

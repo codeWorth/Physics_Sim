@@ -22,8 +22,8 @@ const int REGION_HEIGHT = PHYSICS_HEIGHT / REGIONS_DOWN;
 
 const GLfloat SIM_SPEED = 1;
 const GLfloat ENERGY_LOSS = 0.97;
-const GLfloat ATTRACTION = 1;
-const GLfloat GRAVITY = 60;
+const GLfloat ATTRACTION = 30000;
+const GLfloat GRAVITY = 0;
 
 const int PARTICLE_COUNT = 5000;
 const int PARTICLE_RADIUS = PHYSICS_SCALE * 2;
