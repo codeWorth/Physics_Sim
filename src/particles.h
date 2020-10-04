@@ -169,9 +169,7 @@ void Particles::tick() {
 		}
 	}	
 
-	auto start = timer.now();
 	this->attract();
-	long t1 = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - start).count();
 
 	if (SAMPLE_ERROR) {
 		GLfloat errX = (ax[s] - ax_) / ax_;
@@ -182,15 +180,9 @@ void Particles::tick() {
 	}
 
 	this->updateVelocity(dt); // update velocities based on acceleration BEFORE doing bounces
-	start = timer.now();
 	this->bounce();
-	long t2 = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - start).count();
 	this->wallBounce();
 	this->draw();
-
-	if (tickCount % 128 == 0) {
-		printf("attract = %lu, \t bounce = %lu\n", t1, t2);
-	}
 
 	if (tickCount % 128 == 0 && SAMPLE_ERROR) {
 		GLfloat errTot = 0;
