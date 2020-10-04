@@ -7,7 +7,7 @@
 #include "constants.h"
 #include "GroupedArray.h"
 
-const bool DRAW_CIRCLES = false;// draw the full circle for each particle, or just a single pixel
+const bool DRAW_CIRCLES = true;// draw the full circle for each particle, or just a single pixel
 const bool SAMPLE_ERROR = false;	// print acceleration error sampled from random particles
 
 // Size of box around each region for each the full calculation is done
@@ -74,6 +74,7 @@ private:
 	__m256 ATTRACTION_256;
 	__m256 ONE_HALFS_256;
 	__m256 ONE_256;
+	__m256 K_SPRING_256;
 	__m256 ENERGY_LOSS_PRIME_256;
 	__m256i WINDOW_WIDTH_256;
 
@@ -104,6 +105,7 @@ Particles::Particles(int count) :
 	ENERGY_LOSS_PRIME_256 = _mm256_set1_ps(ENERGY_LOSS_PRIME);	
 	WINDOW_WIDTH_256 = _mm256_set1_epi32(WINDOW_WIDTH);
 	PARTICLE_DIAMETER_256 = _mm256_set1_ps(PARTICLE_RADIUS * 2);
+	K_SPRING_256 = _mm256_set1_ps(K_SPRING);
 
 }
 
@@ -459,15 +461,18 @@ void Particles::bounceRegion(int region, GLfloat dt) {
 
 				__m256 result = _mm256_div_ps(B, dv2);
 				__m256i resultNegative = _mm256_srai_epi32(*(__m256i*)&result, 31); // use floating point sign bit
-				__m256 multMask = _mm256_andnot_ps(*(__m256*)&resultNegative, shouldBounce); // combine shouldBounce and !resultNegative
-				__m256 bounceMult = _mm256_and_ps(result, multMask); // mask out non-bounces
-				
-				avx = _mm256_fmadd_ps(bounceMult, dvx, avx);
-				avy = _mm256_fmadd_ps(bounceMult, dvy, avy);
-				bvx = _mm256_fnmadd_ps(bounceMult, dvx, bvx);
-				bvy = _mm256_fnmadd_ps(bounceMult, dvy, bvy);
+				__m256 spring = _mm256_and_ps(*(__m256*)&resultNegative, K_SPRING_256);
 
-				__m256 k = _mm256_sub_ps(ONE_256, _mm256_and_ps(multMask, ENERGY_LOSS_PRIME_256)); // don't lose energy if failed to bounce
+				result = _mm256_andnot_ps(*(__m256*)&resultNegative, result); // mask out negatives
+				result = _mm256_or_ps(result, spring); // set negatives to K_SPRING
+				result = _mm256_and_ps(result, shouldBounce); // mask out non-bounces
+				
+				avx = _mm256_fmadd_ps(result, dvx, avx);
+				avy = _mm256_fmadd_ps(result, dvy, avy);
+				bvx = _mm256_fnmadd_ps(result, dvx, bvx);
+				bvy = _mm256_fnmadd_ps(result, dvy, bvy);
+
+				__m256 k = _mm256_sub_ps(ONE_256, _mm256_and_ps(shouldBounce, ENERGY_LOSS_PRIME_256)); // don't lose energy if didn't bounce
 				avx = _mm256_mul_ps(k, avx);
 				avy = _mm256_mul_ps(k, avy);
 				bvx = _mm256_mul_ps(k, bvx);
@@ -582,15 +587,18 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd, GLfloat dt) { /
 
 				__m256 result = _mm256_div_ps(B, dv2);
 				__m256i resultNegative = _mm256_srai_epi32(*(__m256i*)&result, 31); // use floating point sign bit
-				result = _mm256_andnot_ps(*(__m256*)&resultNegative, result); // mask out negative results to 0
-				__m256 bounceMult = _mm256_and_ps(result, shouldBounce); // mask out non-bounces
-				
-				avx = _mm256_fmadd_ps(bounceMult, dvx, avx);
-				avy = _mm256_fmadd_ps(bounceMult, dvy, avy);
-				bvx = _mm256_fnmadd_ps(bounceMult, dvx, bvx);
-				bvy = _mm256_fnmadd_ps(bounceMult, dvy, bvy);
+				__m256 spring = _mm256_and_ps(*(__m256*)&resultNegative, K_SPRING_256);
 
-				__m256 k = _mm256_sub_ps(ONE_256, _mm256_andnot_ps(*(__m256*)&resultNegative, ENERGY_LOSS_PRIME_256)); // don't lose energy if failed to bounce
+				result = _mm256_andnot_ps(*(__m256*)&resultNegative, result); // mask out negatives
+				result = _mm256_or_ps(result, spring); // set negatives to K_SPRING
+				result = _mm256_and_ps(result, shouldBounce); // mask out non-bounces
+				
+				avx = _mm256_fmadd_ps(result, dvx, avx);
+				avy = _mm256_fmadd_ps(result, dvy, avy);
+				bvx = _mm256_fnmadd_ps(result, dvx, bvx);
+				bvy = _mm256_fnmadd_ps(result, dvy, bvy);
+
+				__m256 k = _mm256_sub_ps(ONE_256, _mm256_and_ps(shouldBounce, ENERGY_LOSS_PRIME_256)); // don't lose energy if didn't bounce
 				avx = _mm256_mul_ps(k, avx);
 				avy = _mm256_mul_ps(k, avy);
 				bvx = _mm256_mul_ps(k, bvx);
@@ -650,7 +658,7 @@ void Particles::bounceParticles(int i_, int j_, GLfloat dx, GLfloat dy, GLfloat 
 	GLfloat B = dvx * (vx[j_] - vx[i_]) + dvy * (vy[j_] - vy[i_]);
 	GLfloat dv2 = dvx*dvx + dvy*dvy;
 	GLfloat result = B/dv2;
-	result *= result > 0;
+	result = result * (result > 0) + K_SPRING * (result < 0);
 
 	vx[i_] += dvx * result;
 	vy[i_] += dvy * result;
@@ -658,7 +666,6 @@ void Particles::bounceParticles(int i_, int j_, GLfloat dx, GLfloat dy, GLfloat 
 	vy[j_] -= dvy * result;
 
 	GLfloat invK = 1 - ENERGY_LOSS_PRIME * (result > 0);
-
 	vx[i_] *= invK;
 	vy[i_] *= invK;
 	vx[j_] *= invK;
