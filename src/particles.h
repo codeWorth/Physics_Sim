@@ -8,10 +8,14 @@
 #include "GroupedArray.h"
 
 const bool DRAW_CIRCLES = false;// draw the full circle for each particle, or just a single pixel
-const int INV_LAW_RADIUS = 2;	// size of box around each region for each the full calculation is done
 const bool SAMPLE_ERROR = true;	// print acceleration error sampled from random particles
 const int KERNEL_RADIUS = 1;	// how large each center of mass kernel is (in regions, KERNEL_RADIUS = 1 means 3x3 square of regions are combined into 1)
 const int KERNEL_DISTANCE = 4;	// size of box around each region for each the kernel is used instead of the individual regions
+
+// Size of box around each region for each the full calculation is done
+// This is highly dependent on personal preference, and the number and size
+// of regions. Adjust as you see fit
+const int INV_LAW_RADIUS = 2;
 
 class Particles {
 public:
@@ -41,6 +45,7 @@ private:
 	float* kernelCoMx;
 	float* kernelCoMy;
 	float* kernelCount;
+	float* coMMask;
 
 	float errAv[512];
 	long errIndex = 0;
@@ -54,7 +59,7 @@ private:
 	void bounce();
 	void bounceRegion(int region);
 	void bounceRegions(int regionA, int bStart, int bEnd);
-	void bounceParticles(int i_, int j_, GLfloat& dx, GLfloat& dy, GLfloat& r2);
+	void bounceParticles(int i_, int j_, GLfloat dx, GLfloat dy, GLfloat r2);
 
 	void attract();
 	void findCoMs();
@@ -88,6 +93,7 @@ Particles::Particles(int count) :
 
 	coMx = new float[REGIONS_ACROSS*REGIONS_DOWN];
 	coMy = new float[REGIONS_ACROSS*REGIONS_DOWN];
+	coMMask = new float[REGIONS_ACROSS * REGIONS_DOWN];
 
 	kernelCoMx = new float[REGIONS_ACROSS*REGIONS_DOWN];
 	kernelCoMy = new float[REGIONS_ACROSS*REGIONS_DOWN];
@@ -112,6 +118,7 @@ Particles::~Particles() {
 	delete[] kernelCoMx;
 	delete[] kernelCoMy;
 	delete[] kernelCount;
+	delete[] coMMask;
 }
 
 void Particles::setup() {
@@ -181,12 +188,12 @@ void Particles::tick() {
 	if (SAMPLE_ERROR) {
 		GLfloat errX = (ax[s] - ax_) / ax_;
 		GLfloat errY = (ay[s] - ay_) / ay_;
-		// put this error in a buffer to reduce flucuations
+		// put this error in a buffer to reduce fluctuations
 		errAv[errIndex % 512] = std::sqrt(errX*errX + errY*errY);
 		errIndex++;
 	}
 
-	this->updateVelocity(dt);
+	this->updateVelocity(dt); // update velocities based on acceleration BEFORE doing bounces
 	start = timer.now();
 	this->bounce();
 	long t2 = std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - start).count();
@@ -209,6 +216,7 @@ void Particles::tick() {
 }
 
 void Particles::updateVelocity(GLfloat dt) {
+	// this is fast enough for SIMD to be unneeded
 	for (int i = 0; i < PARTICLE_COUNT; i++) {
 		this->vx[i] += this->ax[i] * dt;
 		this->vy[i] += this->ay[i] * dt;
@@ -218,6 +226,7 @@ void Particles::updateVelocity(GLfloat dt) {
 }
 
 void Particles::updatePosition(GLfloat dt) {
+	// this is fast enough for SIMD to be unneeded
 	for (int i = 0; i < PARTICLE_COUNT; i++) {
 		this->x[i] += this->vx[i] * dt;
 		this->y[i] += this->vy[i] * dt;
@@ -225,8 +234,15 @@ void Particles::updatePosition(GLfloat dt) {
 }
 
 void Particles::updateRegions() {
+	// go through each particle, and determine which region it should be in
+	// move it to the correct region if so
+
 	for (int region = 0; region < x.groupsCount(); region++) {
 		if (x.groupSize(region) > 0) {
+
+			// the iteration of the following code is heavily dependent on the implementation of GroupedArray
+			// this is bad design, but I don't want to implement an iterator right now
+			// Put it on the TODO list :/
 			int end = x.groupStart(region) + x.groupSize(region);
 			for (int i = x.groupStart(region); i < end; i++) {
 				int correctRegion = particleRegion(x[i], y[i]);
@@ -254,11 +270,14 @@ void Particles::updateRegions() {
 					end--;
 				}
 			}
+
 		}
 	}
 }
 
 void Particles::wallBounce() {
+	// this is fast enough to not need SIMD optimization
+	// also, I would bet -O3 optomizes this into some branchless code, so it's pretty darn fast
 	for(int i = 0; i < PARTICLE_COUNT; i++) {
 		if (this->x[i] < PARTICLE_RADIUS) {
 			this->x[i] = PARTICLE_RADIUS;
@@ -278,7 +297,8 @@ void Particles::wallBounce() {
 }
 
 void Particles::draw() const {
-	// only ever write to PIXEL_BUFFER_B
+	// only ever write to PIXEL_BUFFER_B, because PIXEL_BUFFER_A is read from
+	// makes the render thread and physics thread play nicely together
 	std::fill(PIXEL_BUFFER_B, PIXEL_BUFFER_B + PIXEL_COUNT, 0);
 
 	for (int i = 0; i < PARTICLE_COUNT; i += 8) {
@@ -290,7 +310,11 @@ void Particles::draw() const {
 		xi = _mm256_srli_epi32(xi, PHYSICS_SCALE_POWER); // divide by PHYSICS_SCALE
 		yi = _mm256_srli_epi32(yi, PHYSICS_SCALE_POWER); // divide by PHYSICS_SCALE
 
+		// this is to account for PARTICLE_COUNT not being divisble by 8
+		// the following code simply won't operate on the garbage data stored in the trailing
+		// part of a partial AVX vector
 		int jMax = std::min(i + 8, PARTICLE_COUNT) - i;
+
 		if (DRAW_CIRCLES) {
 			for (int j = 0; j < jMax; j++) {
 				int x = ((int32_t*)&xi)[j];
@@ -314,6 +338,11 @@ void Particles::draw() const {
 		
 	}
 
+	// This is the only part where a mutex is needed because I'm using two buffers
+	// If this swap happens while OpenGL is drawing PIXEL_BUFFER_A to the screen,
+	// annoying flashing happens. The mutex here prevents that
+	// Relatively low performance impact, but to make it even less, the render loop
+	// is currently limited to 60 FPS
 	swapMutex.lock();
 	std::swap(PIXEL_BUFFER_A, PIXEL_BUFFER_B);
 	swapMutex.unlock();
@@ -324,13 +353,29 @@ void Particles::bounce() {
 	for (int i = 0; i < REGIONS_ACROSS; i++) {
 		for (int j = 0; j < REGIONS_DOWN; j++) {
 			int regionA = regionIndex(i, j);
-			bounceRegion(regionA);
 
+			// bouncing within the region needs to be handeled seperately, because
+			// you don't want to bounce particle #4 w/ particle #7, then
+			// bounce particle #7 w/ particle #4 (since that's the same collision twice)
+			bounceRegion(regionA);
+			
+			// After the above function call, we make it a rule to only collide with regions w/ a greater
+			// index than this one. This way, we never process a collision twice.
+
+			// if this region isn't in the right-most column
+			// we need it to collide with the region to its right
 			if (i+1 < REGIONS_ACROSS) {
 				int regionB = regionIndex(i+1, j);
 				bounceRegions(regionA, x.groupStart(regionB), x.groupStart(regionB+1));
 			}
 
+			// if we aren't on the bottom-most row,
+			// we need to collide with regions below
+			// Unless it's out of bounds, we want to collide with the region 
+			// to our bottom left, the region directly below, and the region
+			// to the bottom right.
+			// Although unlikely, it is possible for a particle to be on a corner, where
+			// it could need to collide with the regions diagonally adjacent.
 			int j2 = j+1;
 			if (j2 < REGIONS_DOWN) {
 				int i2Lower = std::max(0, i-1);
@@ -347,10 +392,13 @@ void Particles::bounce() {
 }
 
 void Particles::bounceRegion(int region) {
+	// bounce particles within this region against each other
+
 	int start = x.groupStart(region);
 	int size = x.groupSize(region);
 	int groupedSize = (size / 8) * 8;
 
+	// first process the particles that divide evenly into AVX vectors that are 8 floats long (256 bits)
 	for (int i = 0; i < groupedSize; i += 8) {
 
 		// handle cases where the SIMD regions could overlap, making updating the values weird
@@ -372,7 +420,16 @@ void Particles::bounceRegion(int region) {
 		__m256 avy = _mm256_loadu_ps(vy.data + i + start);
 
 		// size-8 to make sure that SIMD doesn't segfault
-		for (int j = i + 8; j < size - 8; j++) { // j set to i to avoid duplicate pairs (if we checked (3,5), we don't need to check (5,3))
+		for (int j = i + 8; j < size - 8; j++) { // j set to i+8 to avoid duplicate pairs (if we checked (3,5), we don't need to check (5,3))
+
+			// We're loading particles [8, 16), then particles [9, 17] (for example)
+			// For this reason, it would seem like shifting the floats back by 1 within
+			// the vector, then setting the 8th vector value to the new float
+			// would be faster.
+			// Suprisingly, it is about twice as slow. It turns out that
+			// using _mm256_permute8x32_ps is slow as hell.
+			// Ideally, I would use a bit shift of the entire vector, but
+			// such an instrinsic does not exist :(
 			__m256 bx = _mm256_loadu_ps(x.data + j + start);
 			__m256 by = _mm256_loadu_ps(y.data + j + start);
 
@@ -384,13 +441,24 @@ void Particles::bounceRegion(int region) {
 			__m256 shouldBounce = _mm256_cmp_ps(r2, PARTICLE_RADIUS2_256, _CMP_LT_OQ);
 			int anyBounce =  _mm256_movemask_ps(shouldBounce);
 
+			// Checking if there are any collisions to actually perform is very valuable, because
+			// doing the following calculations every time would be very slow.
+			// Interesting, this also means that this function is strictly as fast as
+			// SISD calculations (in theory), because in general SIMD operations are the equivalent number
+			// of clock cycles as their SISD counterparts. Therefore, as long as a given vector has
+			// at least 1 calculation that needs to be performed, it as fast to process the entire vector
+			// as it is to do that one calculation alone. Neat!
 			if (anyBounce != 0) {
 				__m256 bvx = _mm256_loadu_ps(vx.data + j + start);
 				__m256 bvy = _mm256_loadu_ps(vy.data + j + start);
 
 				__m256 bounceMult = _mm256_and_ps(ENERGY_LOSS_256, shouldBounce);
-				__m256 invR = _mm256_rsqrt_ps(r2);
+				__m256 invR = _mm256_rsqrt_ps(r2); // rsqrt is so much faster than sqrt'ing and inverting wowow
 
+				// The following code shifts the colliding particles such that they are no longer touching
+				// This solves an issue with particles getting easily stuck together
+				// It simples takes the midpoint between the particles, finds their delta to that midpoint, and scales
+				// that delta such that the total distance between them is 2 * particle radius
 				__m256 ratio = _mm256_mul_ps(invR, PARTICLE_RADIUS_256);
 				ratio = _mm256_and_ps(ratio, shouldBounce); // set non-bounced to 0
 				ratio = _mm256_or_ps(ratio, _mm256_andnot_ps(shouldBounce, ONE_HALFS_256)); // set non-bounced to 1
@@ -404,6 +472,7 @@ void Particles::bounceRegion(int region) {
 				bx = _mm256_fmadd_ps(dx, ratio, midX);
 				by = _mm256_fmadd_ps(dy, ratio, midY);
 
+				// the following code calculates new velocities after the collision
 				dx = _mm256_mul_ps(dx, invR); // normalize
 				dy = _mm256_mul_ps(dy, invR);
 
@@ -450,6 +519,8 @@ void Particles::bounceRegion(int region) {
 	}
 
 	// deal with missing items at the end of region, missed because of SIMD grouping
+	// In theory, this code could use SIMD, but it doesn't seem worthwhile, since the code to
+	// attract particles to each other is much slower
 	for (int i = groupedSize; i < size; i++) {
 		for (int j = i+1; j < size; j++) {
 			GLfloat dx = x[j + start] - x[i + start];
@@ -462,7 +533,9 @@ void Particles::bounceRegion(int region) {
 	}
 }
 
-void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA shouldn't overlap regionB
+void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA can't overlap regionB
+	// This function is very similar to bounceRegion, so I'm not going to add many comments
+
 	int aStart = x.groupStart(regionA);
 	int bSize = bEnd - bStart;
 	int eightGroupsA = (x.groupSize(regionA) / 8) * 8; // regionA in groups of 8, cut off extras for now
@@ -488,6 +561,11 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA sh
 		// make sure that SIMD doesn't segfault
 		int endIndex = std::max(0, bSize - 8);
 		for (int j = 0; j < endIndex; j++) {
+
+			// It might seem icky to repeat so much code here. Unfortunately, trying to pass AVX vectors to functions
+			// is a nightmare. You basically cannot pass by reference, so I would be relying on the function getting inlined.
+			// This makes debugging way harder, and overall is just a pain. So instead, I'm repeating this code :(
+			// It's not ideal
 			__m256 bx = _mm256_loadu_ps(x.data + j + bStart);
 			__m256 by = _mm256_loadu_ps(y.data + j + bStart);
 
@@ -565,6 +643,8 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA sh
 	}
 
 	// deal with missing items at the end of region A, missed because of SIMD grouping
+	// This could be improved with SIMD-ification, but it's not worth it, because
+	// currently the attraction code is anywhere from 4x to 6x slower than the bouncing code
 	for (int i = eightGroupsA; i < x.groupSize(regionA); i++) {
 		for (int j = 0; j < bSize; j++) {
 			GLfloat dx = x[j + bStart] - x[i + aStart];
@@ -577,7 +657,7 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd) { // regionA sh
 	}
 }
 
-void Particles::bounceParticles(int i_, int j_, GLfloat& dx, GLfloat& dy, GLfloat& r2) {
+void Particles::bounceParticles(int i_, int j_, GLfloat dx, GLfloat dy, GLfloat r2) {
 	GLfloat invR = rsqrt_fast(r2);
 	dx *= invR;
 	dy *= invR;
@@ -602,23 +682,33 @@ void Particles::bounceParticles(int i_, int j_, GLfloat& dx, GLfloat& dy, GLfloa
 }
 
 void Particles::attract() {
+	// The main optomization here is to treat far away regions as one single big particle,
+	// located at the region's center of mass. This reduces accuracy slightly.
+	// Refer to SAMPLE_ERROR flag to see what the error is.
 
-	for (int i = 0; i < REGIONS_ACROSS; i++) {
+	// Because the regions are arranged in row-major ordering,
+	// it may be slightly faster to put j in the outer loop.
+	// I have a suspicion that -O3 switches the order of these loops anyway though
+	for (int j = 0; j < REGIONS_DOWN; j++) {
 
-		// i-range that is close enough to do full inverse law calculation
-		int i2Lower = std::max(0, i-INV_LAW_RADIUS);
-		int i2Upper = std::min(REGIONS_ACROSS, i+INV_LAW_RADIUS+1);
+		// j-range that is close enough to do full inverse law calculation
+		int j2Lower = std::max(0, j-INV_LAW_RADIUS);
+		int j2Upper = std::min(REGIONS_DOWN, j+INV_LAW_RADIUS+1);
 
-		for (int j = 0; j < REGIONS_DOWN; j++) {
+		for (int i = 0; i < REGIONS_ACROSS; i++) {
 			int regionA = regionIndex(i, j);
 			if (x.groupSize(regionA) == 0) {
 				continue;
 			}
 			int start = x.groupStart(regionA);
+			
+			// It turns out that doing one-sided attractions (attracting i to j, but not j to i)
+			// is actually faster than doing two-sided attractions (updating both i and j at the same time)
+			// because it is more cache friendly.
 
-			// j-range that is close enough to do full inverse law calculation
-			int j2Lower = std::max(0, j-INV_LAW_RADIUS);
-			int j2Upper = std::min(REGIONS_DOWN, j+INV_LAW_RADIUS+1);	
+			// i-range that is close enough to do full inverse law calculation
+			int i2Lower = std::max(0, i-INV_LAW_RADIUS);
+			int i2Upper = std::min(REGIONS_ACROSS, i+INV_LAW_RADIUS+1);
 
 			// rows within close region above j
 			for (int j2 = j2Lower; j2 < j; j2++) {
@@ -655,6 +745,10 @@ void Particles::attract() {
 }
 
 void Particles::findCoMs() {
+	// Just goes through each region, sums up the positions, and divides by the number of particles
+	// Would have to be weighted if particles had diff mass, but luckily I've just let all
+	// particles have the same mass
+
 	for (int region = 0; region < REGIONS_ACROSS*REGIONS_DOWN; region++) {
 		int size = x.groupSize(region);
 		if (size == 0) {
@@ -689,6 +783,8 @@ void Particles::findCoMs() {
 		coMy[region] = totalY / (float)size;
 	}
 
+	// Goes through all the regions, and finds center of mass of a grouping of them
+	// This can be used for very far away regions
 	for (int j = KERNEL_RADIUS; j < REGIONS_DOWN - KERNEL_RADIUS; j++) {
 		for (int i = KERNEL_RADIUS; i < REGIONS_ACROSS - KERNEL_RADIUS; i++) {
 			int kernelIndex = regionIndex(i, j);
@@ -713,7 +809,9 @@ void Particles::findCoMs() {
 }
 
 void Particles::attractToCoMs(int i, int j, int i2Lower, int i2Upper, int j2Lower, int j2Upper) {
-	float coMMask[REGIONS_ACROSS * REGIONS_DOWN];
+	// attracts particles in region (i, j) to all regions that are far enough away for it to be an okay approximation
+
+	// This mask will be true at index i, if particles in this region should attract to region i
 	for (int j2 = 0; j2 < REGIONS_DOWN; j2++) {
 		for (int i2 = 0; i2 < REGIONS_ACROSS; i2++) {
 			int regionB = regionIndex(i2, j2);
@@ -737,6 +835,8 @@ void Particles::attractToCoMs(int i, int j, int i2Lower, int i2Upper, int j2Lowe
 	int j2Upper_ = REGIONS_DOWN - (std::max(0, REGIONS_DOWN - 1 - KERNEL_DISTANCE - j) / kD) * kD;
 
 	for (int k = 0; k < groupedSize; k += 8) {
+		// it's fastest to put the particles as the outer loop, so that we don't have to repeatedly access the array
+		// memory is sloowww
 		__m256 xs = _mm256_loadu_ps(x.data + start + k);
 		__m256 ys = _mm256_loadu_ps(y.data + start + k);
 		__m256 axs = _mm256_loadu_ps(ax.data + start + k);
@@ -767,11 +867,20 @@ void Particles::attractToCoMs(int i, int j, int i2Lower, int i2Upper, int j2Lowe
 	
 	}
 
+	// For the particles remaining 7 or fewer particles, we must process them individually,
+	// since they won't fit into a SIMD vector
+	// The following code uses SIMD for the regions instead because it was SHOCKINGLY slow
+	// to do all the particles individually. Something like a 30% speedup of the attraction code
+	// come just from fixing the below loop. I'm still not quite sure how that's possible
 	for (int k = groupedSize; k < size; k++) {
 		int regionsGrouped = ((REGIONS_ACROSS * REGIONS_DOWN) / 8) * 8;
 
 		__m256 x_256 = _mm256_set1_ps(x[start + k]);
 		__m256 y_256 = _mm256_set1_ps(y[start + k]);
+
+		// We set these to zero, accumulate throughout this loop,
+		// then combine the values at the end.
+		// This is because indexing into an AVX vector is actually pretty slow
 		__m256 dax = _mm256_set1_ps(0);
 		__m256 day = _mm256_set1_ps(0);
 
@@ -787,18 +896,21 @@ void Particles::attractToCoMs(int i, int j, int i2Lower, int i2Upper, int j2Lowe
 			__m256 invR = _mm256_rsqrt_ps(r2);
 			__m256 f = _mm256_mul_ps(ATTRACTION_256, regionSize);
 			f = _mm256_mul_ps(f, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction * regionSize / invR^3
+
+			// This is where the mask generated above is actually needed
 			f = _mm256_and_ps(f, mask); // set f within inner region to 0
 
 			dax = _mm256_fmadd_ps(f, dx, dax);
 			day = _mm256_fmadd_ps(f, dy, day);
 			
 		}
-
+		// Accumulate
 		for (int h = 0; h < 8; h++) {
 			ax[start + k] += ((float*)&dax)[h];
 			ay[start + k] += ((float*)&day)[h];
 		}
 
+		// Finish the remaining (at most 7) regions
 		for (int i2 = regionsGrouped; i2 < REGIONS_ACROSS * REGIONS_DOWN; i2++) {
 				float regionSize = x.groupSize(i2);
 				if (coMMask[i2] == 0 || regionSize == 0) {
@@ -817,88 +929,9 @@ void Particles::attractToCoMs(int i, int j, int i2Lower, int i2Upper, int j2Lowe
 
 }
 
-void Particles::attractRegions(int region, int start, int end) {
-	if (start == end) {
-		return;
-	}
-	int regionStart = x.groupStart(region);
-	int regionSize = x.groupSize(region);
-	int bSize = end - start;
-	int simdSize = (regionSize / 8) * 8;
-
-	for (int i = 0; i < simdSize; i += 8) {
-		for (int i_ = 0; i_ < 8; i_++) {
-			for (int j = 0; j < std::min(i_, bSize); j++) {
-				attractParticles(i + i_ + regionStart, j + start);
-			}
-		}
-
-		__m256 ax = _mm256_loadu_ps(x.data + regionStart + i);
-		__m256 ay = _mm256_loadu_ps(y.data + regionStart + i);
-		__m256 aax = _mm256_loadu_ps(this->ax.data + regionStart + i);
-		__m256 aay = _mm256_loadu_ps(this->ay.data + regionStart + i);
-
-		int endIndex = std::max(0, bSize - 8);
-		for (int j = 0; j < endIndex; j++) {
-			__m256 bx = _mm256_loadu_ps(x.data + start + j);
-			__m256 by = _mm256_loadu_ps(y.data + start + j);
-			__m256 dx = _mm256_sub_ps(bx, ax);
-			__m256 dy = _mm256_sub_ps(by, ay);
-			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
-
-			__m256 invR = _mm256_rsqrt_ps(r2);
-			__m256 f = _mm256_mul_ps(ATTRACTION_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction / r^3
-
-			aax = _mm256_fmadd_ps(f, dx, aax);
-			aay = _mm256_fmadd_ps(f, dy, aay);
-		}
-
-		_mm256_storeu_ps(this->ax.data + regionStart + i, aax);
-		_mm256_storeu_ps(this->ay.data + regionStart + i, aay);
-
-		int jMax = bSize - endIndex;
-		for (int i_ = 0; i_ < 8; i_++) { // missed by SIMD above
-			for (int j_ = i_; j_ < jMax; j_++) {
-				attractParticles(i_ + i + regionStart, j_ + endIndex + start);
-			}
-		}
-	}
-
-
-
-	for (int i = simdSize; i < regionSize; i++) {
-		int bGrouped = (bSize / 8) * 8;
-
-		__m256 ax_256 = _mm256_set1_ps(x[i + regionStart]);
-		__m256 ay_256 = _mm256_set1_ps(y[i + regionStart]);
-		__m256 dax = _mm256_set1_ps(0);
-		__m256 day = _mm256_set1_ps(0);
-
-		for (int j = 0; j < bGrouped; j += 8) {
-			__m256 bx_256 = _mm256_loadu_ps(x.data + j + start);
-			__m256 by_256 = _mm256_loadu_ps(y.data + j + start);
-
-			__m256 dx = _mm256_sub_ps(bx_256, ax_256);
-			__m256 dy = _mm256_sub_ps(by_256, ay_256);
-			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
-			__m256 invR = _mm256_rsqrt_ps(r2);
-			__m256 f = _mm256_mul_ps(ATTRACTION_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction / r^3
-
-			dax = _mm256_fmadd_ps(f, dx, dax);
-			day = _mm256_fmadd_ps(f, dy, day);
-		}
-		for (int h = 0; h < 8; h++) {
-			ax[i + regionStart] += ((float*)&dax)[h];
-			ay[i + regionStart] += ((float*)&day)[h];
-		}
-
-		for (int j = bGrouped; j < bSize; j++) {
-			attractParticles(i + regionStart, j + start);
-		}
-	}
-}
-
 void Particles::attractRegion(int region) {
+	// Attract particles within the given region to each other
+
 	int start = x.groupStart(region);
 	int size = x.groupSize(region);
 	int groupedSize = (size / 8) * 8;
@@ -906,9 +939,12 @@ void Particles::attractRegion(int region) {
 	for (int i = 0; i < groupedSize; i += 8) {
 
 		// handle cases where the SIMD regions could overlap, making updating the values weird
-		// for example, i = [0, 8), j = [1, 9)
+		// for example, when i = [0, 8), j = [1, 9)
+		// In this case, if we used AVX vectors, we would have 2 different values for
+		// particles [1, 8). Then we would have to somehow reconcile these values. It's not impossible,
+		// just ugly, so the below code is simpler
 		for (int i_ = 0; i_ < 8; i_++) {
-			for (int j_ = i_+1; j_ < std::min(size - i, i_ + 8); j_++) {
+			for (int j_ = i_+1; j_ < std::min(size - i, i_ + 8); j_++) { // the std::min is needed if there's less than 16 particles in this region
 				attractParticlesBoth(i_ + i + start, j_ + i + start);
 			}
 		}
@@ -947,7 +983,7 @@ void Particles::attractRegion(int region) {
 
 		int bLast = std::max(i+8, size-8); // where did the previous for loop leave off?
 		for (int i_ = 0; i_ < 8; i_++) { // deal with missing items in this i-range because j couldn't get to the end (SIMD needs eight padding)
-			for (int j_ = i_ + bLast; j_ < size; j_++) {
+			for (int j_ = i_ + bLast; j_ < size; j_++) { // j_ = i_ + bLast so that i_ > j_, and we never do double attraction
 				attractParticlesBoth(i_ + i + start, j_ + start);
 			}
 		}
@@ -955,6 +991,8 @@ void Particles::attractRegion(int region) {
 	}
 
 	// deal with missing items at the end of region, missed because of SIMD grouping
+	// This could be SIMD-ified, but it doesn't seem neccesary from testing
+	// Relatively small performance gains
 	for (int i = groupedSize; i < size; i++) {
 		for (int j = i+1; j < size; j++) {
 			attractParticlesBoth(i + start, j + start);
@@ -962,7 +1000,96 @@ void Particles::attractRegion(int region) {
 	}
 }
 
+void Particles::attractRegions(int region, int start, int end) {
+	// This is very similar to attractRegion, except that we don't worry about do a pair twice,
+	// since a particle can't be in two regions at once
+	if (start == end) {
+		return;
+	}
+	int regionStart = x.groupStart(region);
+	int regionSize = x.groupSize(region);
+	int bSize = end - start;
+	int simdSize = (regionSize / 8) * 8;
+
+	for (int i = 0; i < simdSize; i += 8) {
+		for (int i_ = 0; i_ < 8; i_++) {
+			for (int j = 0; j < std::min(i_, bSize); j++) {
+				attractParticles(i + i_ + regionStart, j + start);
+			}
+		}
+
+		__m256 ax = _mm256_loadu_ps(x.data + regionStart + i);
+		__m256 ay = _mm256_loadu_ps(y.data + regionStart + i);
+		__m256 aax = _mm256_loadu_ps(this->ax.data + regionStart + i);
+		__m256 aay = _mm256_loadu_ps(this->ay.data + regionStart + i);
+
+		int endIndex = std::max(0, bSize - 8);
+		for (int j = 0; j < endIndex; j++) {
+			__m256 bx = _mm256_loadu_ps(x.data + start + j);
+			__m256 by = _mm256_loadu_ps(y.data + start + j);
+			__m256 dx = _mm256_sub_ps(bx, ax);
+			__m256 dy = _mm256_sub_ps(by, ay);
+			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
+
+			__m256 invR = _mm256_rsqrt_ps(r2);
+			__m256 f = _mm256_mul_ps(ATTRACTION_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction / r^3
+
+			// only update particle a, this is explained in attract()
+			aax = _mm256_fmadd_ps(f, dx, aax);
+			aay = _mm256_fmadd_ps(f, dy, aay);
+		}
+
+		_mm256_storeu_ps(this->ax.data + regionStart + i, aax);
+		_mm256_storeu_ps(this->ay.data + regionStart + i, aay);
+
+		int jMax = bSize - endIndex;
+		for (int i_ = 0; i_ < 8; i_++) { // missed by SIMD above
+			for (int j_ = i_; j_ < jMax; j_++) {
+				attractParticles(i_ + i + regionStart, j_ + endIndex + start);
+			}
+		}
+	}
+
+	// The below code being turned into SIMD code was a 40% speedup or something crazy like that
+	// Like I mentioned in the attractToCoMs() code, I'm not sure why it's so much better
+	// But I'll take the performance gain!
+	for (int i = simdSize; i < regionSize; i++) {
+		int bGrouped = (bSize / 8) * 8;
+
+		// This is all very similar to the corresponding section in attractToCoMs()
+		__m256 ax_256 = _mm256_set1_ps(x[i + regionStart]);
+		__m256 ay_256 = _mm256_set1_ps(y[i + regionStart]);
+		__m256 dax = _mm256_set1_ps(0);
+		__m256 day = _mm256_set1_ps(0);
+
+		for (int j = 0; j < bGrouped; j += 8) {
+			__m256 bx_256 = _mm256_loadu_ps(x.data + j + start);
+			__m256 by_256 = _mm256_loadu_ps(y.data + j + start);
+
+			__m256 dx = _mm256_sub_ps(bx_256, ax_256);
+			__m256 dy = _mm256_sub_ps(by_256, ay_256);
+			__m256 r2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy)); // dx*dx + dy*dy
+			__m256 invR = _mm256_rsqrt_ps(r2);
+			__m256 f = _mm256_mul_ps(ATTRACTION_256, _mm256_mul_ps(invR, _mm256_mul_ps(invR, invR))); // attraction / r^3
+
+			dax = _mm256_fmadd_ps(f, dx, dax);
+			day = _mm256_fmadd_ps(f, dy, day);
+		}
+		for (int h = 0; h < 8; h++) {
+			ax[i + regionStart] += ((float*)&dax)[h];
+			ay[i + regionStart] += ((float*)&day)[h];
+		}
+
+		// finish extra particles that didn't fit into the SIMD vector
+		for (int j = bGrouped; j < bSize; j++) {
+			attractParticles(i + regionStart, j + start);
+		}
+	}
+}
+
 void Particles::attractParticles(int i_, int j_) {
+	// This function just attracts particle i_ towards particle j_, and
+	// does not affect particle j_.
 	GLfloat dx = x[j_] - x[i_];
 	GLfloat dy = y[j_] - y[i_];
 	GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
@@ -972,6 +1099,7 @@ void Particles::attractParticles(int i_, int j_) {
 }
 
 void Particles::attractParticlesBoth(int i_, int j_) {
+	// attractParticlesBoth means that it attracts the particles to each other
 	GLfloat dx = x[j_] - x[i_];
 	GLfloat dy = y[j_] - y[i_];
 	GLfloat invR = rsqrt_fast(dx*dx + dy*dy);
@@ -983,6 +1111,7 @@ void Particles::attractParticlesBoth(int i_, int j_) {
 }
 
 int Particles::particleRegion(GLfloat x, GLfloat y) const {
+	// Given the position of a particle, determines which region it should be in
 	return 
 		REGIONS_ACROSS * std::min(
 			REGIONS_DOWN - 1, 
@@ -995,9 +1124,11 @@ int Particles::particleRegion(GLfloat x, GLfloat y) const {
 }
 
 int Particles::regionIndex(int i, int j) const {
+	// given the coordinates of a region, determines it's index within the GroupedArrays and other arrays
 	return j*REGIONS_ACROSS + i;
 }
 
 float Particles::rsqrt_fast(float x) const {
+	// Just using these instrinsics instead of 1/sqrt(x) speeds up the fully optomized code by roughly 25%. Wowzers!
 	return _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(x)));
 }

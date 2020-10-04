@@ -73,7 +73,7 @@ GLuint setupShaderProgram() {
 	const int shaderCount = 2;
 	GLuint shaderIds[shaderCount];
 
-	createShader(
+	createShader( // Maps x/y pos directly to UV to draw 2d image
 		"#version 330 core\n\
 		layout(location = 0) in vec3 vertexPos;\
 		out vec2 UV;\
@@ -85,7 +85,7 @@ GLuint setupShaderProgram() {
 		GL_VERTEX_SHADER,
 		shaderIds[0]
 	);
-	createShader( //texture(textureSampler, UV).rgb;
+	createShader(
 		"#version 330 core\n\
 		in vec2 UV;\
 		out vec3 color;\
@@ -102,6 +102,11 @@ GLuint setupShaderProgram() {
 }
 
 int main(void) {
+	// Drawing code is as simple as possible while still being fast here.
+	// All I have is a plane that fills the entire window, and a texture on that plane
+	// Then I simply write individual pixels to that texture from PIXEL_BUFFER_A
+	// This seems to be plenty fast for my purposes.
+
 	GLFWwindow* window;
 
 	if (!glfwInit()) {
@@ -109,8 +114,7 @@ int main(void) {
 		return -1;
 	}
 
-	/* Create a windowed mode window and its OpenGL context */
-	window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Window", NULL, NULL);
+	window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Physics Simulation", NULL, NULL);
 	if (!window) {
 		glfwTerminate();
 		return -1;
@@ -156,20 +160,13 @@ int main(void) {
 		swapMutex.unlock();
 
 		glEnableVertexAttribArray(0);
-		glVertexAttribPointer(
-			0,
-			3,
-			GL_FLOAT,
-			GL_FALSE,
-			0,
-			(void*)0
-		);
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
 
 		glUseProgram(shaderProgram);
 		glDrawArrays(GL_TRIANGLES, 0, 6);
 		glDisableVertexAttribArray(0);
 
-		glfwSwapBuffers(window); /* Swap front and back buffers */
+		glfwSwapBuffers(window);
 		glfwPollEvents();
 
 		long dt = duration_cast<nanoseconds>(timer.now() - t0).count(); // maintain max of 60 fps
