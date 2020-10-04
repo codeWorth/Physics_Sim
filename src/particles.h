@@ -9,8 +9,6 @@
 
 const bool DRAW_CIRCLES = false;// draw the full circle for each particle, or just a single pixel
 const bool SAMPLE_ERROR = true;	// print acceleration error sampled from random particles
-const int KERNEL_RADIUS = 1;	// how large each center of mass kernel is (in regions, KERNEL_RADIUS = 1 means 3x3 square of regions are combined into 1)
-const int KERNEL_DISTANCE = 4;	// size of box around each region for each the kernel is used instead of the individual regions
 
 // Size of box around each region for each the full calculation is done
 // This is highly dependent on personal preference, and the number and size
@@ -42,9 +40,6 @@ private:
 
 	float* coMx;
 	float* coMy;
-	float* kernelCoMx;
-	float* kernelCoMy;
-	float* kernelCount;
 	float* coMMask;
 
 	float errAv[512];
@@ -95,10 +90,6 @@ Particles::Particles(int count) :
 	coMy = new float[REGIONS_ACROSS*REGIONS_DOWN];
 	coMMask = new float[REGIONS_ACROSS * REGIONS_DOWN];
 
-	kernelCoMx = new float[REGIONS_ACROSS*REGIONS_DOWN];
-	kernelCoMy = new float[REGIONS_ACROSS*REGIONS_DOWN];
-	kernelCount = new float[REGIONS_ACROSS*REGIONS_DOWN];
-
 	hasTime = false;
 	tickCount = 0;
 	dtTotal = 0;
@@ -115,9 +106,6 @@ Particles::Particles(int count) :
 Particles::~Particles() {
 	delete[] coMx;
 	delete[] coMy;
-	delete[] kernelCoMx;
-	delete[] kernelCoMy;
-	delete[] kernelCount;
 	delete[] coMMask;
 }
 
@@ -783,29 +771,6 @@ void Particles::findCoMs() {
 		coMy[region] = totalY / (float)size;
 	}
 
-	// Goes through all the regions, and finds center of mass of a grouping of them
-	// This can be used for very far away regions
-	for (int j = KERNEL_RADIUS; j < REGIONS_DOWN - KERNEL_RADIUS; j++) {
-		for (int i = KERNEL_RADIUS; i < REGIONS_ACROSS - KERNEL_RADIUS; i++) {
-			int kernelIndex = regionIndex(i, j);
-			kernelCoMx[kernelIndex] = 0;
-			kernelCoMy[kernelIndex] = 0;
-			kernelCount[kernelIndex] = 0;
-
-			for (int j2 = j - KERNEL_RADIUS; j2 <= j + KERNEL_RADIUS; j2++) {
-				for (int i2 = i - KERNEL_RADIUS; i2 <= i + KERNEL_RADIUS; i2++) {
-					int region = regionIndex(i2, j2);
-					float size = x.groupSize(region);
-					kernelCoMx[region] += coMx[region] * size;
-					kernelCoMy[region] += coMy[region] * size;
-					kernelCount[region] += size;
-				}
-			}
-
-			kernelCoMx[kernelIndex] /= kernelCount[kernelIndex];
-			kernelCoMy[kernelIndex] /= kernelCount[kernelIndex];
-		}
-	}
 }
 
 void Particles::attractToCoMs(int i, int j, int i2Lower, int i2Upper, int j2Lower, int j2Upper) {
@@ -827,12 +792,6 @@ void Particles::attractToCoMs(int i, int j, int i2Lower, int i2Upper, int j2Lowe
 	int start = x.groupStart(regionA);
 	int size = x.groupSize(regionA);
 	int groupedSize = (size / 8) * 8;
-
-	int kD = KERNEL_RADIUS*2 + 1; // kernel diameter
-	int i2Lower_ = (std::max(0, i - KERNEL_DISTANCE) / kD) * kD;
-	int i2Upper_ = REGIONS_ACROSS - (std::max(0, REGIONS_ACROSS - 1 - KERNEL_DISTANCE - i) / kD) * kD;
-	int j2Lower_ = (std::max(0, j - KERNEL_DISTANCE) / kD) * kD;
-	int j2Upper_ = REGIONS_DOWN - (std::max(0, REGIONS_DOWN - 1 - KERNEL_DISTANCE - j) / kD) * kD;
 
 	for (int k = 0; k < groupedSize; k += 8) {
 		// it's fastest to put the particles as the outer loop, so that we don't have to repeatedly access the array
