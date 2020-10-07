@@ -8,7 +8,7 @@
 #include "GroupedArray.h"
 
 const bool DRAW_CIRCLES = false;// draw the full circle for each particle, or just a single pixel
-const bool SAMPLE_ERROR = true;	// print acceleration error sampled from random particles
+const bool SAMPLE_ERROR = false;	// print acceleration error sampled from random particles
 
 // Size of box around each region for each the full calculation is done
 // This is highly dependent on personal preference, and the number and size
