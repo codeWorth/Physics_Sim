@@ -35,5 +35,6 @@ std::mutex swapMutex;
 
 bool DRAW_CIRCLES = false;	// draw the full circle for each particle, or just a single pixel
 bool SAMPLE_ERROR = false;	// print acceleration error sampled from random particles
+bool PRINT_DT = false;
 
 #endif // PHYSICS_CONSTANTS

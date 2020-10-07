@@ -118,6 +118,7 @@ int main(int argc, char* argv[]) {
 		{"radius", required_argument, 0, 8},
 		{"circles", no_argument, 0, 9},
 		{"error", no_argument, 0, 10},
+		{"dt", no_argument, 0, 11},
 		{0, 0, 0, 0}
 	};
 
@@ -173,6 +174,14 @@ int main(int argc, char* argv[]) {
 
 			case 10:
 				SAMPLE_ERROR = true;
+				break;
+			
+			case 11:
+				PRINT_DT = true;
+				break;
+
+			case '?':
+				fprintf(stderr, "Invalid option!\n");
 				break;
 
 			default:

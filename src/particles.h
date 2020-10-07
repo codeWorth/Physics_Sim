@@ -128,19 +128,19 @@ void Particles::tick() {
 		return;
 	}
 
-	GLfloat dt = (double)std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - lastTime).count() / 1000000000.0f;
+	GLfloat dt = ((double)std::chrono::duration_cast<std::chrono::nanoseconds>(timer.now() - lastTime).count() / 1000000000.0f);
 	lastTime = timer.now();
 
 	dtTotal += dt;
 	tickCount++;
 
-	if (tickCount == 512) {
+	if (tickCount == 512 && PRINT_DT) {
 		printf("%f\n", (dtTotal / (double)tickCount));
 		dtTotal = 0;
 		tickCount = 0;
 	}
 
-	
+	dt *= SIM_SPEED;	
 	this->updateRegions();
 	this->updatePosition(dt);
 	this->findCoMs();
