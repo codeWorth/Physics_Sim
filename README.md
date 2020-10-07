@@ -33,16 +33,15 @@ There's also a flag `#define NDEBUG` at the top of GroupedArray.h. If commented 
 This project can be compiled with cmake.
 
 The follow are command line arguments, all are optional:
-
-	--across:		number of regions in x direction, default 16 (int)
-	--down:			number of regions in y direction, default 16 (int)
-	--timerate:		scaling that time progresses at, default 1 (float)
-	--loss:			percent of energy retained during collisions, default 1, (0, 1] (float)
-	--attraction:	gravitational attraction between particles, default 30000 (float)
-	--gravity:		universal gravity downwards, default 0, try 60 (float)
-	--count:		number of particles, default 5000 (int)
-	--speed:		initial randomized speed of particles, default 400 (float)
-	--radius:		particle radius, default 16 (int)
-	--circles:		flag to draw particles as circles, rather than just points, defaults to false
-	--error:		flag to print sampled acceleration error, defaults to false
-	--dt:			flag to print delta time between ticks, defaults to false
+	--across:	number of regions in x direction, default 16 (int)
+	--down:		number of regions in y direction, default 16 (int)
+	--timerate:	scaling that time progresses at, default 1 (float)
+	--loss:		percent of energy retained during collisions, default 1, (0, 1] (float)
+	--attraction:gravitational attraction between particles, default 30000 (float)
+	--gravity:	universal gravity downwards, default 0, try 60 (float)
+	--count:	number of particles, default 5000 (int)
+	--speed:	initial randomized speed of particles, default 400 (float)
+	--radius:	particle radius, default 16 (int)
+	--circles:	flag to draw particles as circles, rather than just points, defaults to false
+	--error:	flag to print sampled acceleration error, defaults to false
+	--dt:		flag to print delta time between ticks, defaults to false
