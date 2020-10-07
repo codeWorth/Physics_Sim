@@ -5,6 +5,8 @@
 #include <thread>
 #include <iostream>
 #include <chrono>
+#include <getopt.h>
+#include <string> // stof, stoi
 
 #include "constants.h"
 #include "particles.h"
@@ -101,7 +103,83 @@ GLuint setupShaderProgram() {
 
 }
 
-int main(void) {
+int main(int argc, char* argv[]) {
+
+	int index = 0;
+	static struct option options[] = {
+		{"across", required_argument, 0, 0},
+		{"down", required_argument, 0, 1},
+		{"timerate", required_argument, 0, 2},
+		{"loss", required_argument, 0, 3},
+		{"attraction", required_argument, 0, 4},
+		{"gravity", required_argument, 0, 5},
+		{"count", required_argument, 0, 6},
+		{"speed", required_argument, 0, 7},
+		{"radius", required_argument, 0, 8},
+		{"circles", no_argument, 0, 9},
+		{"error", no_argument, 0, 10},
+		{0, 0, 0, 0}
+	};
+
+	while (true) {
+		int arg = getopt_long(argc, argv, "", options, &index);
+
+		if (arg == -1) {
+			break;
+		}
+
+		switch (arg) {
+			case 0:
+				REGIONS_ACROSS = stoi(optarg);
+				REGION_WIDTH = PHYSICS_WIDTH / REGIONS_ACROSS;
+				break;
+			
+			case 1:
+				REGIONS_DOWN = stoi(optarg);
+				REGION_HEIGHT = PHYSICS_HEIGHT / REGIONS_DOWN;
+				break;
+
+			case 2:
+				SIM_SPEED = stof(optarg);
+				break;
+
+			case 3:
+				ENERGY_LOSS = stof(optarg);
+				break;
+
+			case 4:
+				ATTRACTION = stof(optarg);
+				break;
+
+			case 5:
+				GRAVITY = stof(optarg);
+				break;
+
+			case 6:
+				PARTICLE_COUNT = stoi(optarg);
+				break;
+
+			case 7:
+				PARTICLE_SPEED = stof(optarg);
+				break;
+
+			case 8:
+				PARTICLE_RADIUS = stoi(optarg);
+				PARTICLE_RADIUS2 = PARTICLE_RADIUS * PARTICLE_RADIUS * 4;
+
+			case 9:
+				DRAW_CIRCLES = true;
+				break;
+
+			case 10:
+				SAMPLE_ERROR = true;
+				break;
+
+			default:
+				break;
+		}
+	}
+
 	// Drawing code is as simple as possible while still being fast here.
 	// All I have is a plane that fills the entire window, and a texture on that plane
 	// Then I simply write individual pixels to that texture from PIXEL_BUFFER_A

@@ -15,21 +15,25 @@ const int PHYSICS_SCALE = 1 << PHYSICS_SCALE_POWER;
 const int PHYSICS_WIDTH = WINDOW_WIDTH * PHYSICS_SCALE;
 const int PHYSICS_HEIGHT = WINDOW_HEIGHT * PHYSICS_SCALE;
 
-const int REGIONS_ACROSS = 16;
-const int REGIONS_DOWN = 16;
-const int REGION_WIDTH = PHYSICS_WIDTH / REGIONS_ACROSS;
-const int REGION_HEIGHT = PHYSICS_HEIGHT / REGIONS_DOWN;
+int REGIONS_ACROSS = 16;
+int REGIONS_DOWN = 16;
+int REGION_WIDTH = PHYSICS_WIDTH / REGIONS_ACROSS;
+int REGION_HEIGHT = PHYSICS_HEIGHT / REGIONS_DOWN;
 
-const GLfloat SIM_SPEED = 1;
-const GLfloat ENERGY_LOSS = 0.97;
-const GLfloat ATTRACTION = 30000;
-const GLfloat GRAVITY = 0;
+GLfloat SIM_SPEED = 1;
+GLfloat ENERGY_LOSS = 0.97;
+GLfloat ATTRACTION = 30000;
+GLfloat GRAVITY = 0;
 
-const int PARTICLE_COUNT = 5000;
-const int PARTICLE_RADIUS = PHYSICS_SCALE * 2;
-const int PARTICLE_RADIUS2 = PARTICLE_RADIUS * PARTICLE_RADIUS * 4;
-const GLfloat PARTICLE_SPEED = 400;
+int PARTICLE_COUNT = 5000;
+int PARTICLE_RADIUS = PHYSICS_SCALE * 2;
+int PARTICLE_RADIUS2 = PARTICLE_RADIUS * PARTICLE_RADIUS * 4;
+GLfloat PARTICLE_SPEED = 400;
 
 std::mutex swapMutex;
+
+
+bool DRAW_CIRCLES = false;	// draw the full circle for each particle, or just a single pixel
+bool SAMPLE_ERROR = false;	// print acceleration error sampled from random particles
 
 #endif // PHYSICS_CONSTANTS
