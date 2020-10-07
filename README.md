@@ -33,6 +33,7 @@ There's also a flag `#define NDEBUG` at the top of GroupedArray.h. If commented 
 This project can be compiled with cmake.
 
 The follow are command line arguments, all are optional:
+
 	--across:	number of regions in x direction, default 16 (int)
 	--down:		number of regions in y direction, default 16 (int)
 	--timerate:	scaling that time progresses at, default 1 (float)
