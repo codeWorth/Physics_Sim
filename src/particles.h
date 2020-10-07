@@ -75,7 +75,7 @@ private:
 	__m256 ONE_HALFS_256;
 	__m256 ONE_256;
 	__m256 K_SPRING_256;
-	__m256 ENERGY_LOSS_PRIME_256;
+	__m256 ENERGY_LOSS_256;
 	__m256i WINDOW_WIDTH_256;
 
 };
@@ -102,7 +102,7 @@ Particles::Particles(int count) :
 	ATTRACTION_256 = _mm256_set1_ps(ATTRACTION); 
 	ONE_HALFS_256 = _mm256_set1_ps(0.5f);
 	ONE_256 = _mm256_set1_ps(1.0f);
-	ENERGY_LOSS_PRIME_256 = _mm256_set1_ps(ENERGY_LOSS_PRIME);	
+	ENERGY_LOSS_256 = _mm256_set1_ps(ENERGY_LOSS);	
 	WINDOW_WIDTH_256 = _mm256_set1_epi32(WINDOW_WIDTH);
 	PARTICLE_DIAMETER_256 = _mm256_set1_ps(PARTICLE_RADIUS * 2);
 	K_SPRING_256 = _mm256_set1_ps(K_SPRING);
@@ -185,8 +185,8 @@ void Particles::tick() {
 		errIndex++;
 	}
 
-	this->updateVelocity(dt); // update velocities based on acceleration BEFORE doing bounces
 	this->bounce(dt);
+	this->updateVelocity(dt);
 	this->wallBounce();
 	this->draw();
 
@@ -409,6 +409,8 @@ void Particles::bounceRegion(int region, GLfloat dt) {
 		__m256 ay = _mm256_loadu_ps(y.data + i + start);
 		__m256 avx = _mm256_loadu_ps(vx.data + i + start);
 		__m256 avy = _mm256_loadu_ps(vy.data + i + start);
+		__m256 aax = _mm256_loadu_ps(this->ax.data + i + start);
+		__m256 aay = _mm256_loadu_ps(this->ay.data + i + start);
 
 		// size-8 to make sure that SIMD doesn't segfault
 		for (int j = i + 8; j < size - 8; j++) { // j set to i+8 to avoid duplicate pairs (if we checked (3,5), we don't need to check (5,3))
@@ -442,6 +444,8 @@ void Particles::bounceRegion(int region, GLfloat dt) {
 			if (anyBounce != 0) {
 				__m256 bvx = _mm256_loadu_ps(vx.data + j + start);
 				__m256 bvy = _mm256_loadu_ps(vy.data + j + start);
+				__m256 bax = _mm256_loadu_ps(this->ax.data + j + start);
+				__m256 bay = _mm256_loadu_ps(this->ay.data + j + start);
 
 				__m256 r = _mm256_sqrt_ps(r2);
 				__m256 x = _mm256_sub_ps(r, PARTICLE_DIAMETER_256);
@@ -453,40 +457,30 @@ void Particles::bounceRegion(int region, GLfloat dt) {
 				__m256 dvx = _mm256_mul_ps(f, dx);
 				__m256 dvy = _mm256_mul_ps(f, dy);
 
-				// calculate u (fudge factor)
 				__m256 dvabx = _mm256_sub_ps(bvx, avx);
 				__m256 dvaby = _mm256_sub_ps(bvy, avy);
 				__m256 B = _mm256_fmadd_ps(dvx, dvabx, _mm256_mul_ps(dvy, dvaby)); // dvx*dvavx + dvy*dvaby
 				__m256 dv2 = _mm256_fmadd_ps(dvx, dvx, _mm256_mul_ps(dvy, dvy)); // dvx^2 + dvy^2
 
+				dv2 = _mm256_mul_ps(dv2, dt_256);
 				__m256 result = _mm256_div_ps(B, dv2);
-				__m256i resultNegative = _mm256_srai_epi32(*(__m256i*)&result, 31); // use floating point sign bit
-				__m256 spring = _mm256_and_ps(*(__m256*)&resultNegative, K_SPRING_256);
-
-				result = _mm256_andnot_ps(*(__m256*)&resultNegative, result); // mask out negatives
-				result = _mm256_or_ps(result, spring); // set negatives to K_SPRING
+				// result = _mm256_mul_ps(result, ENERGY_LOSS_256);
 				result = _mm256_and_ps(result, shouldBounce); // mask out non-bounces
 				
-				avx = _mm256_fmadd_ps(result, dvx, avx);
-				avy = _mm256_fmadd_ps(result, dvy, avy);
-				bvx = _mm256_fnmadd_ps(result, dvx, bvx);
-				bvy = _mm256_fnmadd_ps(result, dvy, bvy);
+				aax = _mm256_fmadd_ps(result, dvx, aax);
+				aay = _mm256_fmadd_ps(result, dvy, aay);
+				bax = _mm256_fnmadd_ps(result, dvx, bax);
+				bay = _mm256_fnmadd_ps(result, dvy, bay);
 
-				__m256 k = _mm256_sub_ps(ONE_256, _mm256_and_ps(shouldBounce, ENERGY_LOSS_PRIME_256)); // don't lose energy if didn't bounce
-				avx = _mm256_mul_ps(k, avx);
-				avy = _mm256_mul_ps(k, avy);
-				bvx = _mm256_mul_ps(k, bvx);
-				bvy = _mm256_mul_ps(k, bvy);
-
-				_mm256_storeu_ps(vx.data + j + start, bvx);
-				_mm256_storeu_ps(vy.data + j + start, bvy);
+				_mm256_storeu_ps(this->ax.data + j + start, bax);
+				_mm256_storeu_ps(this->ay.data + j + start, bay);
 
 			}
 
 		}
 
-		_mm256_storeu_ps(vx.data + i + start, avx);
-		_mm256_storeu_ps(vy.data + i + start, avy);
+		_mm256_storeu_ps(this->ax.data + i + start, aax);
+		_mm256_storeu_ps(this->ay.data + i + start, aay);
 
 		int bLast = std::max(i+8, size-8); // where did the previous for loop leave off?
 		for (int i_ = 0; i_ < 8; i_++) { // deal with missing items in this i-range because j couldn't get to the end (SIMD needs eight padding)
@@ -545,6 +539,8 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd, GLfloat dt) { /
 		__m256 ay = _mm256_loadu_ps(y.data + i + aStart);
 		__m256 avx = _mm256_loadu_ps(vx.data + i + aStart);
 		__m256 avy = _mm256_loadu_ps(vy.data + i + aStart);
+		__m256 aax = _mm256_loadu_ps(this->ax.data + i + aStart);
+		__m256 aay = _mm256_loadu_ps(this->ay.data + i + aStart);
 
 		// make sure that SIMD doesn't segfault
 		int endIndex = std::max(0, bSize - 8);
@@ -568,6 +564,8 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd, GLfloat dt) { /
 			if (anyBounce != 0) {
 				__m256 bvx = _mm256_loadu_ps(vx.data + j + bStart);
 				__m256 bvy = _mm256_loadu_ps(vy.data + j + bStart);
+				__m256 bax = _mm256_loadu_ps(this->ax.data + j + bStart);
+				__m256 bay = _mm256_loadu_ps(this->ay.data + j + bStart);
 
 				__m256 r = _mm256_sqrt_ps(r2);
 				__m256 x = _mm256_sub_ps(r, PARTICLE_DIAMETER_256);
@@ -579,40 +577,30 @@ void Particles::bounceRegions(int regionA, int bStart, int bEnd, GLfloat dt) { /
 				__m256 dvx = _mm256_mul_ps(f, dx);
 				__m256 dvy = _mm256_mul_ps(f, dy);
 
-				// calculate u (fudge factor)
 				__m256 dvabx = _mm256_sub_ps(bvx, avx);
 				__m256 dvaby = _mm256_sub_ps(bvy, avy);
 				__m256 B = _mm256_fmadd_ps(dvx, dvabx, _mm256_mul_ps(dvy, dvaby)); // dvx*dvavx + dvy*dvaby
 				__m256 dv2 = _mm256_fmadd_ps(dvx, dvx, _mm256_mul_ps(dvy, dvy)); // dvx^2 + dvy^2
 
+				dv2 = _mm256_mul_ps(dv2, dt_256);
 				__m256 result = _mm256_div_ps(B, dv2);
-				__m256i resultNegative = _mm256_srai_epi32(*(__m256i*)&result, 31); // use floating point sign bit
-				__m256 spring = _mm256_and_ps(*(__m256*)&resultNegative, K_SPRING_256);
-
-				result = _mm256_andnot_ps(*(__m256*)&resultNegative, result); // mask out negatives
-				result = _mm256_or_ps(result, spring); // set negatives to K_SPRING
+				// result = _mm256_mul_ps(result, ENERGY_LOSS_256);
 				result = _mm256_and_ps(result, shouldBounce); // mask out non-bounces
 				
-				avx = _mm256_fmadd_ps(result, dvx, avx);
-				avy = _mm256_fmadd_ps(result, dvy, avy);
-				bvx = _mm256_fnmadd_ps(result, dvx, bvx);
-				bvy = _mm256_fnmadd_ps(result, dvy, bvy);
+				aax = _mm256_fmadd_ps(result, dvx, aax);
+				aay = _mm256_fmadd_ps(result, dvy, aay);
+				bax = _mm256_fnmadd_ps(result, dvx, bax);
+				bay = _mm256_fnmadd_ps(result, dvy, bay);
 
-				__m256 k = _mm256_sub_ps(ONE_256, _mm256_and_ps(shouldBounce, ENERGY_LOSS_PRIME_256)); // don't lose energy if didn't bounce
-				avx = _mm256_mul_ps(k, avx);
-				avy = _mm256_mul_ps(k, avy);
-				bvx = _mm256_mul_ps(k, bvx);
-				bvy = _mm256_mul_ps(k, bvy);
-
-				_mm256_storeu_ps(vx.data + j + bStart, bvx);
-				_mm256_storeu_ps(vy.data + j + bStart, bvy);
+				_mm256_storeu_ps(this->ax.data + j + bStart, bvx);
+				_mm256_storeu_ps(this->ay.data + j + bStart, bvy);
 
 			}
 
 		}
 
-		_mm256_storeu_ps(vx.data + i + aStart, avx);
-		_mm256_storeu_ps(vy.data + i + aStart, avy);
+		_mm256_storeu_ps(this->ax.data + i + aStart, avx);
+		_mm256_storeu_ps(this->ay.data + i + aStart, avy);
 
 		int jMax = bSize - endIndex;
 		for (int i_ = 0; i_ < 8; i_++) { // missed by SIMD above
@@ -657,19 +645,12 @@ void Particles::bounceParticles(int i_, int j_, GLfloat dx, GLfloat dy, GLfloat 
 
 	GLfloat B = dvx * (vx[j_] - vx[i_]) + dvy * (vy[j_] - vy[i_]);
 	GLfloat dv2 = dvx*dvx + dvy*dvy;
-	GLfloat result = B/dv2;
-	result = result * (result > 0) + K_SPRING * (result < 0);
+	GLfloat result = B/(dv2*dt) * ENERGY_LOSS;
 
-	vx[i_] += dvx * result;
-	vy[i_] += dvy * result;
-	vx[j_] -= dvx * result;
-	vy[j_] -= dvy * result;
-
-	GLfloat invK = 1 - ENERGY_LOSS_PRIME * (result > 0);
-	vx[i_] *= invK;
-	vy[i_] *= invK;
-	vx[j_] *= invK;
-	vy[j_] *= invK;
+	ax[i_] += dvx * result;
+	ay[i_] += dvy * result;
+	ax[j_] -= dvx * result;
+	ay[j_] -= dvy * result;
 
 }
 

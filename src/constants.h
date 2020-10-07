@@ -21,16 +21,16 @@ const int REGION_WIDTH = PHYSICS_WIDTH / REGIONS_ACROSS;
 const int REGION_HEIGHT = PHYSICS_HEIGHT / REGIONS_DOWN;
 
 const GLfloat SIM_SPEED = 2;
-const GLfloat ENERGY_LOSS = 0.99;
+const GLfloat ENERGY_LOSS = 0.98;
 const GLfloat K_SPRING = 20000 / ENERGY_LOSS;
 const GLfloat ENERGY_LOSS_PRIME = 1 - ENERGY_LOSS;
-const GLfloat ATTRACTION = 50000;
-const GLfloat GRAVITY = 60;
+const GLfloat ATTRACTION = 300000;
+const GLfloat GRAVITY = 0;
 
-const int PARTICLE_COUNT = 500;
-const int PARTICLE_RADIUS = PHYSICS_SCALE * 8;
+const int PARTICLE_COUNT = 5000;
+const int PARTICLE_RADIUS = PHYSICS_SCALE;
 const int PARTICLE_RADIUS2 = PARTICLE_RADIUS * PARTICLE_RADIUS * 4;
-const GLfloat PARTICLE_SPEED = 0;//400;
+const GLfloat PARTICLE_SPEED = 400;
 
 std::mutex swapMutex;
 
