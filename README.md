@@ -38,7 +38,7 @@ The follow are command line arguments, all are optional:
 	--down:		number of regions in y direction, default 16 (int)
 	--timerate:	scaling that time progresses at, default 1 (float)
 	--loss:		percent of energy retained during collisions, default 1, (0, 1] (float)
-	--attraction:gravitational attraction between particles, default 30000 (float)
+	--attraction:	gravitational attraction between particles, default 30000 (float)
 	--gravity:	universal gravity downwards, default 0, try 60 (float)
 	--count:	number of particles, default 5000 (int)
 	--speed:	initial randomized speed of particles, default 400 (float)
